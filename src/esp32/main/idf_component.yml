@@ -1,4 +1,7 @@
 ## IDF Component Manager Manifest File
 dependencies:
   idf: ">=4.4"
-  usb_host_hid: "1.0.0"
+  usb_host_hid: 
+    version: "1.0.0"
+    rules:
+      - if: "target in [esp32s2, esp32s3]"

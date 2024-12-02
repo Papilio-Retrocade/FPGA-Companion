@@ -13,6 +13,7 @@
 #include "../mcu_hw.h"
 #include "../hid.h"
 #include "../config.h"
+#include "esp_log.h"
 
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
@@ -21,7 +22,7 @@
 /* ========================================================================= */
 /* =========                          USB                        =========== */
 /* ========================================================================= */
-
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
 
@@ -340,6 +341,8 @@ static void usb_init(void) {
 #endif
 }
 
+// End of check for CONFIG_IDF_TARGET_ESP32S3
+#endif
 /* ========================================================================= */
 /* ========                          SPI                            ======== */
 /* ========================================================================= */
@@ -351,7 +354,8 @@ static void usb_init(void) {
 #define PIN_NUM_MOSI 11
 #define PIN_NUM_CLK  12
 #define PIN_NUM_CS   10
-#define PIN_NUM_IRQ  14
+#define PIN_NUM_IRQ  9
+// #define PIN_NUM_IRQ  14
 
 extern TaskHandle_t com_task_handle;
 static spi_device_handle_t spi;
@@ -412,7 +416,7 @@ void mcu_hw_spi_init(void) {
   debugf("  IRQn = GPIO%d", PIN_NUM_IRQ);
   gpio_set_pull_mode(PIN_NUM_IRQ, GPIO_PULLUP_ONLY);
   gpio_set_direction(PIN_NUM_IRQ, GPIO_MODE_INPUT);  
-  gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1);
+  gpio_install_isr_service(ESP_INTR_FLAG_LEVEL2);
   gpio_isr_handler_add(PIN_NUM_IRQ, irq_handler, NULL);
   gpio_set_intr_type(PIN_NUM_IRQ, GPIO_INTR_LOW_LEVEL);
 }
@@ -451,6 +455,262 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
   return retval;
 }
 
+/* ========================================================================= */
+/* =========                          BLUETOOTH                  =========== */
+/* ========================================================================= */
+static const char *TAG = "ESP_BT";
+
+#include "nvs_flash.h"
+#include "esp_bt.h"
+
+#if CONFIG_BT_NIMBLE_ENABLED
+#include "host/ble_hs.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#else
+#include "esp_bt_defs.h"
+#include "esp_gap_ble_api.h"
+#include "esp_gatts_api.h"
+#include "esp_gatt_defs.h"
+#include "esp_bt_main.h"
+#include "esp_bt_device.h"
+#endif
+
+#if CONFIG_BT_NIMBLE_ENABLED
+#include "host/ble_hs.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#define ESP_BD_ADDR_STR         "%02x:%02x:%02x:%02x:%02x:%02x"
+#define ESP_BD_ADDR_HEX(addr)   addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
+#else
+#include "esp_bt_defs.h"
+#include "esp_gap_ble_api.h"
+#include "esp_gatts_api.h"
+#include "esp_gatt_defs.h"
+#include "esp_bt_main.h"
+#include "esp_bt_device.h"
+#endif
+
+#include "esp_hidh.h"
+#include "esp_hid_gap.h"
+
+static struct {
+  int handle;
+  hid_state_t state;
+  hid_report_t rep;
+} bt_hid_device[MAX_HID_DEVICES];
+
+// typedef struct {
+//   uint8_t bSize: 2;
+//   uint8_t bType: 2;
+//   uint8_t bTag: 4;
+// } __attribute__((packed)) item_t;
+
+
+
+void bt_hidh_callback(void *handler_args, esp_event_base_t base, int32_t id, void *event_data)
+{
+    esp_hidh_event_t event = (esp_hidh_event_t)id;
+    esp_hidh_event_data_t *param = (esp_hidh_event_data_t *)event_data;
+
+    switch (event) {
+    case ESP_HIDH_OPEN_EVENT: {
+        if (param->open.status == ESP_OK) {
+            const uint8_t *bda = esp_hidh_dev_bda_get(param->open.dev);
+            ESP_LOGI(TAG, ESP_BD_ADDR_STR " OPEN: %s", ESP_BD_ADDR_HEX(bda), esp_hidh_dev_name_get(param->open.dev));
+            esp_hidh_dev_dump(param->open.dev, stdout);
+            const esp_hid_device_config_t *config = esp_hidh_dev_config_get(param->open.dev);
+            esp_hid_raw_report_map_t *report_map = config->report_maps;
+            parse_report_descriptor(report_map->data, report_map->len, &bt_hid_device[0].rep, NULL);
+        } else {
+            ESP_LOGE(TAG, " OPEN failed!");
+        }
+        break;
+    }
+    case ESP_HIDH_BATTERY_EVENT: {
+        const uint8_t *bda = esp_hidh_dev_bda_get(param->battery.dev);
+        ESP_LOGI(TAG, ESP_BD_ADDR_STR " BATTERY: %d%%", ESP_BD_ADDR_HEX(bda), param->battery.level);
+        break;
+    }
+    case ESP_HIDH_INPUT_EVENT: {
+        const uint8_t *bda = esp_hidh_dev_bda_get(param->input.dev);
+        ESP_LOGI(TAG, ESP_BD_ADDR_STR " INPUT: %8s, MAP: %2u, ID: %3u, Len: %d, Byte: 0x%08X, Data:", ESP_BD_ADDR_HEX(bda), esp_hid_usage_str(param->input.usage), param->input.map_index, param->input.report_id, param->input.length, param->input.data[2]);
+        ESP_LOG_BUFFER_HEX(TAG, param->input.data, param->input.length);
+
+        // item_t all = ((item_t*)rep)->bTag;
+        // item_t testing = (item_t*)param->input.usage->bType;
+        // uint8_t size = ((item_t*)rep)->bSize;
+
+        // typedef struct {
+        //   uint8_t bSize: 2;
+        //   uint8_t bType: 2;
+        //   uint8_t bTag: 4;
+        // } __attribute__((packed)) item_t;
+
+        // item_t testing;
+        // testing.bType = (item_t*)param->input.usage;
+
+        // struct test_t testing = { 0, param->input.usage, 0 };
+        // struct {
+        //   uint8_t bSize: 2;
+        //   uint8_t bType: 2;
+        //   uint8_t bTag: 4;
+        // } __attribute__((packed)) testing = {0,0,0};
+        // testing.bType = param->input.usage;
+
+
+        // uint8_t temp[sizeof(param->input.length + 1)];
+        // temp[0] = *(uint8_t*)&testing;
+        // for (int i=0; i< param->input.length + 1; i++)
+        //   temp[i+1] = param->input.data[i];
+        hid_parse(&bt_hid_device[0].rep, &bt_hid_device[0].state, param->input.data, param->input.length);
+
+        // if(parse_report_descriptor(report_desc, report_desc_len, &hid_device[idx].rep, NULL)) {
+          // hid_device[idx].handle = hid_device_handle;
+          // if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
+        // hid_device[idx].state.joystick.js_index = hid_allocate_joystick();
+
+        // for(int idx=0;idx<MAX_HID_DEVICES;idx++)
+        //   if(hid_device[idx].handle == hid_device_handle)     
+        //     hid_parse(&hid_device[idx].rep, &hid_device[idx].state, data, data_length);
+
+        // mcu_hw_spi_begin();
+        // mcu_hw_spi_tx_u08(SPI_TARGET_HID);
+        // mcu_hw_spi_tx_u08(SPI_HID_KEYBOARD);
+        // mcu_hw_spi_tx_u08(core_map_key(param->input.data[2]));
+        // mcu_hw_spi_end();
+        break;
+    }
+    case ESP_HIDH_FEATURE_EVENT: {
+        const uint8_t *bda = esp_hidh_dev_bda_get(param->feature.dev);
+        ESP_LOGI(TAG, ESP_BD_ADDR_STR " FEATURE: %8s, MAP: %2u, ID: %3u, Len: %d", ESP_BD_ADDR_HEX(bda),
+                 esp_hid_usage_str(param->feature.usage), param->feature.map_index, param->feature.report_id,
+                 param->feature.length);
+        ESP_LOG_BUFFER_HEX(TAG, param->feature.data, param->feature.length);
+        break;
+    }
+    case ESP_HIDH_CLOSE_EVENT: {
+        const uint8_t *bda = esp_hidh_dev_bda_get(param->close.dev);
+        ESP_LOGI(TAG, ESP_BD_ADDR_STR " CLOSE: %s", ESP_BD_ADDR_HEX(bda), esp_hidh_dev_name_get(param->close.dev));
+        break;
+    }
+    default:
+        ESP_LOGI(TAG, "EVENT: %d", event);
+        break;
+    }
+}
+
+#define SCAN_DURATION_SECONDS 5
+
+void bt_hid_task(void *pvParameters)
+{
+    size_t results_len = 0;
+    esp_hid_scan_result_t *results = NULL;
+    ESP_LOGI(TAG, "SCAN...");
+    //start scan for HID devices
+    esp_hid_scan(SCAN_DURATION_SECONDS, &results_len, &results);
+    ESP_LOGI(TAG, "SCAN: %u results", results_len);
+    if (results_len) {
+        esp_hid_scan_result_t *r = results;
+        esp_hid_scan_result_t *cr = NULL;
+        while (r) {
+            printf("  %s: " ESP_BD_ADDR_STR ", ", (r->transport == ESP_HID_TRANSPORT_BLE) ? "BLE" : "BT ", ESP_BD_ADDR_HEX(r->bda));
+            printf("RSSI: %d, ", r->rssi);
+            printf("USAGE: %s, ", esp_hid_usage_str(r->usage));
+#if CONFIG_BT_BLE_ENABLED
+            if (r->transport == ESP_HID_TRANSPORT_BLE) {
+                cr = r;
+                printf("APPEARANCE: 0x%04x, ", r->ble.appearance);
+                printf("ADDR_TYPE: '%s', ", ble_addr_type_str(r->ble.addr_type));
+            }
+#endif /* CONFIG_BT_BLE_ENABLED */
+#if CONFIG_BT_NIMBLE_ENABLED
+            if (r->transport == ESP_HID_TRANSPORT_BLE) {
+                cr = r;
+                printf("APPEARANCE: 0x%04x, ", r->ble.appearance);
+                printf("ADDR_TYPE: '%d', ", r->ble.addr_type);
+            }
+#endif /* CONFIG_BT_BLE_ENABLED */
+#if CONFIG_BT_HID_HOST_ENABLED
+            if (r->transport == ESP_HID_TRANSPORT_BT) {
+                cr = r;
+                printf("COD: %s[", esp_hid_cod_major_str(r->bt.cod.major));
+                esp_hid_cod_minor_print(r->bt.cod.minor, stdout);
+                printf("] srv 0x%03x, ", r->bt.cod.service);
+                print_uuid(&r->bt.uuid);
+                printf(", ");
+            }
+#endif /* CONFIG_BT_HID_HOST_ENABLED */
+            printf("NAME: %s ", r->name ? r->name : "");
+            printf("\n");
+            r = r->next;
+        }
+        if (cr) {
+            //open the last result
+            esp_hidh_dev_open(cr->bda, cr->transport, cr->ble.addr_type);
+        }
+        //free the results
+        esp_hid_scan_results_free(results);
+    }
+    vTaskDelete(NULL);
+}
+
+#if CONFIG_BT_NIMBLE_ENABLED
+void ble_hid_host_task(void *param)
+{
+    ESP_LOGI(TAG, "BLE Host Task Started");
+    /* This function will return only when nimble_port_stop() is executed */
+    nimble_port_run();
+
+    nimble_port_freertos_deinit();
+}
+void ble_store_config_init(void);
+#endif
+
+void mcu_hw_bt_init(void)
+{
+
+    // mark all entries as unused
+    for(int idx=0;idx<MAX_HID_DEVICES;idx++)
+      bt_hid_device[idx].handle = -1;
+
+    esp_err_t ret;
+#if HID_HOST_MODE == HIDH_IDLE_MODE
+    ESP_LOGE(TAG, "Please turn on BT HID host or BLE!");
+    return;
+#endif
+    ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK( ret );
+    ESP_LOGI(TAG, "setting hid gap, mode:%d", HID_HOST_MODE);
+    ESP_ERROR_CHECK( esp_hid_gap_init(HID_HOST_MODE) );
+#if CONFIG_BT_BLE_ENABLED
+    ESP_ERROR_CHECK( esp_ble_gattc_register_callback(esp_hidh_gattc_event_handler) );
+#endif /* CONFIG_BT_BLE_ENABLED */
+    esp_hidh_config_t config = {
+        .callback = bt_hidh_callback,
+        .event_stack_size = 4096,
+        .callback_arg = NULL,
+    };
+    ESP_ERROR_CHECK( esp_hidh_init(&config) );
+
+#if CONFIG_BT_NIMBLE_ENABLED
+    /* XXX Need to have template for store */
+    ble_store_config_init();
+
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+	/* Starting nimble task after gatts is initialized*/
+    ret = esp_nimble_enable(ble_hid_host_task);
+    if (ret) {
+        ESP_LOGE(TAG, "esp_nimble_enable failed: %d", ret);
+    }
+#endif
+    xTaskCreate(&bt_hid_task, "bt_hid_task", 15 * 1024, NULL, 2, NULL);
+}
+
 void mcu_hw_reset(void) {
   debugf("RESET");
   esp_restart();
@@ -461,7 +721,10 @@ void mcu_hw_init(void) {
   printf("\r\n\r\n" LOGO "           FPGA Companion for ESP32-S2/S3\r\n\r\n");
 
   mcu_hw_spi_init();
+  #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
   usb_init();
+  #endif
+  mcu_hw_bt_init();
 }
 
 void mcu_hw_main_loop(void) {

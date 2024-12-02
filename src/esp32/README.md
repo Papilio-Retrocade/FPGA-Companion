@@ -92,6 +92,13 @@ and change a few settings:
 - Navigate to ```Component Config``` and then to ```FreeRTOS``` and ```Kernel```
   - Set ```configTICK_RATE_HZ``` to 1000
 
+for bluetooth settings
+  host=bluedroid dual mode
+  classic bluetooth=1
+  bluetooth controller mode=bluetooth dual mode
+  classic bluetooth hid=1 (doesn't show up until bluetooth controller mode is set to dual mode)
+  classic bt hid host=1
+
 Finally start the build with 
 
 ```
