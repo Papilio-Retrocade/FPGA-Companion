@@ -19,7 +19,7 @@
 
 #include "../sysctrl.h"
 
-
+#include "wifi_log.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
 #define USB_ERROR_CHECK(a) (a)
@@ -356,14 +356,17 @@ static void usb_init(void) {
 #include "esp_flash_spi_init.h"
 
 #define SPI_HOST_ID SPI3_HOST
-#define PIN_NUM_MISO 13
+#define PIN_NUM_MISO 3       // Papilio Arcade
+// #define PIN_NUM_MISO 13        // Dock
 #define PIN_NUM_MOSI 11
 #define PIN_NUM_CLK  12
 #define PIN_NUM_CS   10
 #define PIN_NUM_IRQ  9
-#define PIN_NUM_RECONFIG_N   8    // To reconfigure the FPGA after a new bitstream has been written to the flash
+#define PIN_NUM_RECONFIG_N   13    // Papilio Arcade - To reconfigure the FPGA after a new bitstream has been written to the flash 
+// #define PIN_NUM_RECONFIG_N   8    // Dock - To reconfigure the FPGA after a new bitstream has been written to the flash 
 // #define PIN_NUM_IRQ  14
-#define PIN_NUM_FLASH_CS   7
+#define PIN_NUM_FLASH_CS   4   // Papilio Arcade - To select the flash chip
+// #define PIN_NUM_FLASH_CS   7   // Dock - To select the flash chip
 
 esp_flash_t* ext_flash;
 
@@ -447,15 +450,14 @@ void mcu_hw_spi_init(void) {
   
   // Probe the Flash chip and initialize it
   esp_err_t err = esp_flash_init(ext_flash);
-  if (err != ESP_OK) {
+  if (err == ESP_OK) {
+      // Print out the ID and size
+      uint32_t id;
+      ESP_ERROR_CHECK(esp_flash_read_id(ext_flash, &id));
+      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, ext_flash->size / 1024, id);
+  } else {
       debugf("Failed to initialize external Flash: %s (0x%x)", esp_err_to_name(err), err);
   }
-
-  // Print out the ID and size
-  uint32_t id;
-  ESP_ERROR_CHECK(esp_flash_read_id(ext_flash, &id));
-  debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, ext_flash->size / 1024, id);
-
 
 }
 
@@ -515,9 +517,11 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
 
 void mcu_hw_fpga_reset(void) {
   debugf("FPGA RESET");
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
   gpio_set_level(PIN_NUM_RECONFIG_N, 0);
   vTaskDelay(pdMS_TO_TICKS(100));
   gpio_set_level(PIN_NUM_RECONFIG_N, 1);
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_INPUT);
 }
 
 void mcu_hw_reset(void) {
@@ -527,14 +531,25 @@ void mcu_hw_reset(void) {
 }
 
 void mcu_hw_init(void) {
+  // gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
+  // gpio_set_pull_mode(PIN_NUM_RECONFIG_N, GPIO_PULLUP_ONLY);
+  // gpio_set_level(PIN_NUM_RECONFIG_N, 1);
+  wifi_log_early_init();
+
+  vTaskDelay(pdMS_TO_TICKS(5000));
+
   printf("\r\n\r\n" LOGO "           FPGA Companion for ESP32-S2/S3\r\n\r\n");
 
   debugf("  FPGA Reconfig  = GPIO%d", PIN_NUM_RECONFIG_N);
-  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
-  gpio_set_level(PIN_NUM_RECONFIG_N, 1);
+
+  wifi_log_init();
 
   mcu_hw_spi_init();
+#if CONFIG_USB_HOST_ENABLE
   usb_init();
+#else
+  debugf("USB host disabled — Serial/JTAG active for debugging");
+#endif
 }
 
 void mcu_hw_main_loop(void) {

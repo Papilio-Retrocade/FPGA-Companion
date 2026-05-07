@@ -1,0 +1,9 @@
+# ESP-IDF build output
+build/
+
+# Generated sdkconfig — use sdkconfig.defaults for version-controlled defaults
+sdkconfig
+sdkconfig.old
+
+# Local credential overrides — copy from sdkconfig.defaults.local.example and fill in
+sdkconfig.defaults.local

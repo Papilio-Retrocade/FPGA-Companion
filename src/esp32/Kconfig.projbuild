@@ -1,0 +1,43 @@
+menu "HID Example Configuration"
+    config EXAMPLE_SSP_ENABLED
+        bool "Secure Simple Pairing"
+        depends on BT_CLASSIC_ENABLED
+        default y
+        help
+            This enables the Secure Simple Pairing. If disable this option,
+            Bluedroid will only support Legacy Pairing
+
+    config EXAMPLE_HID_HOST_ENABLED
+        bool "Enable Example HID Host"
+        depends on BT_NIMBLE_ENABLED
+        default y
+        select BT_NIMBLE_HID_SERVICE
+        help
+            This enables Nimble HID Host
+endmenu
+
+menu "WiFi UDP Logging"
+    config WIFI_LOG_ENABLE
+        bool "Enable WiFi UDP logging"
+        default n
+        help
+            Start WiFi in station mode and forward all log output to UDP
+            broadcast packets on port 7777.  Useful when the USB port is
+            occupied by USB-Host mode (HID keyboards / gamepads).
+            On your PC:  ncat -u -l 7777   (Windows)
+                         nc  -u -l -p 7777 (Linux/macOS)
+
+    config WIFI_LOG_SSID
+        string "WiFi SSID"
+        default "YourSSID"
+        depends on WIFI_LOG_ENABLE
+        help
+            SSID of the WiFi network to connect to for log streaming.
+
+    config WIFI_LOG_PASSWORD
+        string "WiFi Password"
+        default "YourPassword"
+        depends on WIFI_LOG_ENABLE
+        help
+            Password for the WiFi network.
+endmenu

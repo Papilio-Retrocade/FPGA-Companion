@@ -1,0 +1,5 @@
+# Local WiFi credentials for wifi_log UDP logging.
+# Copy this file to sdkconfig.defaults.local and fill in your values.
+# sdkconfig.defaults.local is gitignored and will never be committed.
+CONFIG_WIFI_LOG_SSID="YourSSID"
+CONFIG_WIFI_LOG_PASSWORD="YourPassword"

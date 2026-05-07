@@ -1,0 +1,36 @@
+menu "USB"
+    config USB_HOST_ENABLE
+        bool "Enable USB HID host"
+        default y
+        help
+            Enable the USB OTG host stack for HID keyboard/mouse/gamepad.
+            Disable this to free the USB PHY for USB Serial/JTAG logging
+            (useful when debugging WiFi logging or other early-boot issues).
+            When disabled, the COM port Serial/JTAG CDC stays active.
+endmenu
+
+menu "WiFi UDP Logging"
+    config WIFI_LOG_ENABLE
+        bool "Enable WiFi UDP logging"
+        default n
+        help
+            Start WiFi in station mode and forward all log output to UDP
+            broadcast packets on port 7777.  Useful when the USB port is
+            occupied by USB-Host mode (HID keyboards / gamepads).
+            On your PC:  ncat -u -l 7777   (Windows)
+                         nc  -u -l -p 7777 (Linux/macOS)
+
+    config WIFI_LOG_SSID
+        string "WiFi SSID"
+        default "YourSSID"
+        depends on WIFI_LOG_ENABLE
+        help
+            SSID of the WiFi network to connect to for log streaming.
+
+    config WIFI_LOG_PASSWORD
+        string "WiFi Password"
+        default "YourPassword"
+        depends on WIFI_LOG_ENABLE
+        help
+            Password for the WiFi network.
+endmenu

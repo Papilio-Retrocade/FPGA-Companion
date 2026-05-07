@@ -14,10 +14,11 @@ idf_component_register(SRCS
 	"../../core_c64.c"
 	"../../core_vic20.c"
 	"../../core_amiga.c"
-	"../../core_atari2600.c
+	"../../core_atari2600.c"
 	"../../config.c"
 	"../../xml.c"
 	"../mcu_hw.c"
+	"../wifi_log.c"
 	${U8G2_SRC}	
 	../../u8g2/sys/bitmap/common/u8x8_d_bitmap.c
 
@@ -26,3 +27,8 @@ idf_component_register(SRCS
 	".."
 	"../../u8g2/csrc"
 )
+
+# Wrap _write_r at link time so __wrap__write_r intercepts both printf()
+# (used by debugf) and ESP_LOGx output. Both ultimately call _write_r(r,fd,buf,n)
+# to flush bytes to stdout — this is the single correct intercept point.
+target_link_options(${COMPONENT_LIB} INTERFACE -Wl,--wrap=_write_r)

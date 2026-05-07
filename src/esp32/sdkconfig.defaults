@@ -1,0 +1,24 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 5.3.0 Project Minimal Configuration
+#
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=y
+CONFIG_BT_HID_ENABLED=y
+CONFIG_BT_HID_HOST_ENABLED=y
+CONFIG_BT_GATTC_NOTIF_REG_MAX=16
+CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+CONFIG_BTDM_CTRL_MODE_BTDM=y
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_SECTOR_512=y
+CONFIG_FATFS_USE_FASTSEEK=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_WL_SECTOR_SIZE_512=y
+
+# ── WiFi UDP Logging ────────────────────────────────────────────────────────
+# On your PC run:  ncat -u -l 7777   (Windows / Nmap)
+#                  nc -u -l -p 7777  (Linux / macOS)
+CONFIG_WIFI_LOG_ENABLE=y
+# WiFi credentials — copy sdkconfig.defaults.local.example to sdkconfig.defaults.local and set real values there
+CONFIG_WIFI_LOG_SSID="YourSSID"
+CONFIG_WIFI_LOG_PASSWORD="YourPassword"
+# ────────────────────────────────────────────────────────────────────────────
