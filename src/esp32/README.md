@@ -68,12 +68,16 @@ or
 idf.py set-target esp32s3 
 ```
 
-Then in ```esp-idf/components/fatfs/src/ffconf.h``` you need to
-manually set
-```
-#define FF_USE_STRFUNC 1
-#define FF_FS_EXFAT    1
-```
+Then enter the menu by
+
+> **Note:** The following `ffconf.h` manual edit is no longer required — it is
+> applied automatically at build time by `CMakeLists.txt`. Kept here for reference.
+>
+> ~~In `esp-idf/components/fatfs/src/ffconf.h` manually set:~~
+> ```
+> #define FF_USE_STRFUNC 1
+> #define FF_FS_EXFAT    1
+> ```
 
 Then enter the menu by
 

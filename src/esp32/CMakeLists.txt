@@ -29,6 +29,12 @@ if(EXISTS "${_ffconf}")
     unset(_orig)
 endif()
 
+# Load local credentials (gitignored) on top of the shared defaults.
+# sdkconfig.defaults.local overrides sdkconfig.defaults for WIFI_LOG_SSID/PASSWORD.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.local")
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.defaults.local")
+endif()
+
 set(PROJECT fpga_companion)
 project(${PROJECT})
 
