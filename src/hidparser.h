@@ -31,7 +31,7 @@ typedef struct {
       struct {
 	uint8_t byte_offset;
 	uint8_t bitmask;
-      } button[12];             // 12 buttons max
+      } button[16];             // 16 buttons max
       
       struct {
 	uint16_t offset;

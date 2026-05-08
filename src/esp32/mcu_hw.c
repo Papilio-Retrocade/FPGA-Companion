@@ -47,7 +47,7 @@ typedef struct {
 
 void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
                                  const hid_host_interface_event_t event, void *arg) {
-    uint8_t data[16];
+    uint8_t data[64];
     size_t data_length = 0;
 
     switch (event) {
@@ -55,11 +55,10 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
         USB_ERROR_CHECK( hid_host_device_get_raw_input_report_data(hid_device_handle,
 					   data, sizeof(data), &data_length));
 
-	// find matching hid report
 	for(int idx=0;idx<MAX_HID_DEVICES;idx++)
-	  if(hid_device[idx].handle == hid_device_handle)     
+	  if(hid_device[idx].handle == hid_device_handle)
 	    hid_parse(&hid_device[idx].rep, &hid_device[idx].state, data, data_length);
-	  
+
         break;
 	
     case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
@@ -117,7 +116,16 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 	      if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 		hid_device[idx].state.joystick.js_index = hid_allocate_joystick();
 	      
-	      USB_ERROR_CHECK( hid_host_device_start(hid_device_handle) );
+	      esp_err_t start_err = hid_host_device_start(hid_device_handle);
+	      usb_debugf("hid_host_device_start: %d", start_err);
+
+	      // DualShock 3 / Sixaxis requires a feature report to start streaming HID data.
+	      // Without this the device connects but never sends INPUT reports.
+	      uint8_t ds3_activate[] = { 0x42, 0x0c, 0x00, 0x00 };
+	      esp_err_t ds3_err = hid_class_request_set_report(hid_device_handle,
+	                            HID_REPORT_TYPE_FEATURE, 0xf4,
+	                            ds3_activate, sizeof(ds3_activate));
+	      usb_debugf("DS3 activate: %d (ok if 0 or ESP_ERR_NOT_SUPPORTED)", ds3_err);
 	    } else
 	      usb_debugf("ignoring device");
 	  }

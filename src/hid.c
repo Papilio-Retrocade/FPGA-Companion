@@ -242,19 +242,38 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
 			report->joystick_mouse.axis[i].size, is_signed);
   }
 
-  // ... and four buttons
+  // ... and four action buttons (buttons 12-15: e.g. Triangle/Circle/Cross/Square on DS3)
   unsigned char joy = 0;
-  for(int i=0;i<4;i++)
-    if(buffer[report->joystick_mouse.button[i].byte_offset] & 
+  for(int i=12;i<16;i++)
+    if(report->joystick_mouse.button[i].bitmask &&
+       buffer[report->joystick_mouse.button[i].byte_offset] & 
        report->joystick_mouse.button[i].bitmask)
-      joy |= (0x10<<i);
+      joy |= (0x10<<(i-12));
+  // fall back to buttons 0-3 if no action buttons were parsed (simpler controllers)
+  if(!joy)
+    for(int i=0;i<4;i++)
+      if(report->joystick_mouse.button[i].bitmask &&
+         buffer[report->joystick_mouse.button[i].byte_offset] & 
+         report->joystick_mouse.button[i].bitmask)
+        joy |= (0x10<<i);
 
-  // ... and the eight extra buttons
+  // ... D-pad buttons (4-7) drive directions: up, right, down, left
+  // (common on DS3/Sixaxis; on other gamepads these may be shoulder buttons
+  //  but they will simply OR into directions without causing harm)
+  static const uint8_t dpad_joy[4] = { 0x08, 0x01, 0x04, 0x02 }; // up, right, down, left
+  for(int i=0;i<4;i++)
+    if(report->joystick_mouse.button[i+4].bitmask &&
+       buffer[report->joystick_mouse.button[i+4].byte_offset] &
+       report->joystick_mouse.button[i+4].bitmask)
+      joy |= dpad_joy[i];
+
+  // ... and eight extra buttons (8-11: L2/R2/L1/R1)
   unsigned char btn_extra = 0;
-  for(int i=4;i<12;i++)
-    if(buffer[report->joystick_mouse.button[i].byte_offset] & 
+  for(int i=8;i<12;i++)
+    if(report->joystick_mouse.button[i].bitmask &&
+       buffer[report->joystick_mouse.button[i].byte_offset] & 
       report->joystick_mouse.button[i].bitmask) 
-      btn_extra |= (1<<(i-4));
+      btn_extra |= (1<<(i-8));
 
   // map directions to digital
   if(a[0] > 0xc0) joy |= 0x01;
@@ -262,10 +281,35 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
   if(a[1] > 0xc0) joy |= 0x04;
   if(a[1] < 0x40) joy |= 0x08;
 
-  int ax = 0;
-  int ay = 0;
-  ax = a[0];
-  ay = a[1];
+  // Apply deadzone: clamp to center if within ±16 of 128 to suppress drift
+  #define JOY_DEADZONE 16
+  #define JOY_CENTER   128
+  int ax = (a[0] > JOY_CENTER - JOY_DEADZONE && a[0] < JOY_CENTER + JOY_DEADZONE) ? JOY_CENTER : a[0];
+  int ay = (a[1] > JOY_CENTER - JOY_DEADZONE && a[1] < JOY_CENTER + JOY_DEADZONE) ? JOY_CENTER : a[1];
+
+  // Select button (DS3 button 0) toggles OSD on rising edge
+  unsigned char sel_btn = (report->joystick_mouse.button[0].bitmask &&
+    (buffer[report->joystick_mouse.button[0].byte_offset] &
+     report->joystick_mouse.button[0].bitmask)) ? 1 : 0;
+  if(sel_btn && !state->last_select)
+    menu_notify(osd_is_visible() ? MENU_EVENT_HIDE : MENU_EVENT_SHOW);
+  state->last_select = sel_btn;
+
+  // When OSD is open, route gamepad inputs to menu navigation
+  if(osd_is_visible()) {
+    unsigned char newly_pressed = joy & ~state->last_state;
+    if(newly_pressed & 0x08) menu_notify(MENU_EVENT_UP);
+    if(newly_pressed & 0x04) menu_notify(MENU_EVENT_DOWN);
+    if(newly_pressed & 0x02) menu_notify(MENU_EVENT_LEFT);
+    if(newly_pressed & 0x01) menu_notify(MENU_EVENT_RIGHT);
+    if(newly_pressed & 0x40) menu_notify(MENU_EVENT_SELECT); // Cross
+    if(newly_pressed & 0x20) menu_notify(MENU_EVENT_HIDE);   // Circle
+    state->last_state = joy;
+    state->last_state_x = ax;
+    state->last_state_y = ay;
+    state->last_state_btn_extra = btn_extra;
+    return;
+  }
 
   if((joy != state->last_state) || 
      (ax != state->last_state_x) || 
@@ -308,10 +352,7 @@ void rii_joy_parse(const unsigned char *buffer) {
 }
 
 void hid_parse(const hid_report_t *report, hid_state_t *state, uint8_t const* data, uint16_t len) {
-  //  usb_debugf("hid parse %d, expect %d", len, report->report_size);
   if(!len) return;
-  
-  // hexdump((void*)data, len);
 
   // the following is a hack for the Rii keyboard/touch combos to use the
   // left top multimedia pad as a joystick. These special keys are sent
@@ -325,7 +366,9 @@ void hid_parse(const hid_report_t *report, hid_state_t *state, uint8_t const* da
   }
 
   // check and skip report id if present
-  if(report->report_id_present && (len-1 == report->report_size)) {
+  // Use >= so that devices sending larger-than-expected reports (e.g. DS3)
+  // are still parsed — extra bytes at the end are simply ignored.
+  if(report->report_id_present && (len-1 >= report->report_size)) {
     if(data[0] != report->report_id) {
       usb_debugf("FAIL %d != %d", data[0], report->report_id);
       return;
@@ -335,7 +378,7 @@ void hid_parse(const hid_report_t *report, hid_state_t *state, uint8_t const* da
     data++; len--;
   }
   
-  if(len == report->report_size) {
+  if(len >= report->report_size) {
     if(report->type == REPORT_TYPE_KEYBOARD)
       kbd_parse(report, &state->kbd, data, len);
     

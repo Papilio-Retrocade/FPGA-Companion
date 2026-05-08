@@ -99,6 +99,13 @@ bool parse_report_descriptor(const uint8_t *rep, uint16_t rep_size, hid_report_t
 	// that e.g. both axes and the button of a joystick are ready to be used
 	uint8_t report_complete = 0;
 
+	// When a descriptor has multiple REPORT_IDs inside one application
+	// collection, conf->report_id ends up pointing at the last REPORT_ID
+	// seen.  These two variables remember which report actually held the
+	// axes/buttons so we can fix up conf at the end.
+	uint8_t joystick_report_id = 0;
+	uint16_t joystick_bit_count = 0;
+
 	// joystick/mouse components
 	int8_t axis[MAX_AXES];
 	uint8_t btns = 0;
@@ -169,14 +176,15 @@ bool parse_report_descriptor(const uint8_t *rep, uint16_t rep_size, hid_report_t
 			// main item
 
 				switch(tag) {
-				case 8:
+				case 8: {
+					uint8_t prev_complete = report_complete;
 					// handle found buttons 
 					if(btns) {
 						if((conf->type == REPORT_TYPE_JOYSTICK) ||
 						   (conf->type == REPORT_TYPE_MOUSE)) {
 						// scan for up to four buttons
 							char b;
-							for(b=0;b<12;b++) {
+						for(b=0;b<16;b++) {
 								if(report_count > buttons) {
 								uint16_t this_bit = bit_count+b;
 
@@ -238,7 +246,15 @@ bool parse_report_descriptor(const uint8_t *rep, uint16_t rep_size, hid_report_t
 					btns = 0;
 					for (i=0; i<MAX_AXES; i++) axis[i] = -1;
 					hat = -1;
+
+					// If this INPUT contributed new joystick/mouse data, remember
+					// which report ID it belongs to and the cumulative bit count.
+					if(report_complete != prev_complete) {
+						joystick_report_id = conf->report_id;
+						joystick_bit_count = bit_count;
+					}
 					break;
+				}
 
 				case 9:
 					hidp_extreme_debugf("OUTPUT(%lu)", value);
@@ -285,13 +301,24 @@ bool parse_report_descriptor(const uint8_t *rep, uint16_t rep_size, hid_report_t
 
 						// check if report is usable and stop parsing if it is
 						if(report_is_usable(bit_count, report_complete, conf)) {
-						        return true;
+							// For multi-report descriptors (several REPORT_IDs in one
+							// application collection), conf->report_id and report_size
+							// reflect the last REPORT_ID seen, not the one that holds
+							// buttons/axes.  Fix them up now.
+							if(joystick_report_id) {
+								conf->report_id   = joystick_report_id;
+								conf->report_size = joystick_bit_count / 8;
+								hidp_debugf("  - multi-report: corrected to id=%d size=%d",
+								            conf->report_id, conf->report_size);
+							}
+							return true;
 						} else {
 							// retry with next report
 							bit_count = 0;
 							report_complete = 0;
+							joystick_report_id = 0;
+							joystick_bit_count = 0;
 						}
-
 					} else {
 						hidp_debugf(" -> unexpected");
 						return false;

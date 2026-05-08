@@ -19,6 +19,7 @@ struct hid_joystick_state_S {
   unsigned char last_state_x;
   unsigned char last_state_y;
   unsigned char last_state_btn_extra;
+  unsigned char last_select;
 };
 
 typedef union {

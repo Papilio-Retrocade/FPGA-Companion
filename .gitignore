@@ -52,3 +52,8 @@ Mkfile.old
 dkms.conf
 
 build/
+src/esp32/managed_components/
+.vscode/
+src/FPGA-Companion.code-workspace
+src/esp32/debug.log
+src/esp32/dependencies.lock
