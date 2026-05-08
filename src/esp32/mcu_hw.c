@@ -451,7 +451,7 @@ void mcu_hw_spi_init(void) {
       .cs_io_num = PIN_NUM_FLASH_CS,
       // .io_mode = SPI_FLASH_FASTRD,
       .io_mode = SPI_FLASH_SLOWRD,
-      .freq_mhz = ESP_FLASH_20MHZ
+      .freq_mhz = 20
   };
 
   ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &device_config));
@@ -462,7 +462,9 @@ void mcu_hw_spi_init(void) {
       // Print out the ID and size
       uint32_t id;
       ESP_ERROR_CHECK(esp_flash_read_id(ext_flash, &id));
-      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, ext_flash->size / 1024, id);
+      uint32_t flash_size = 0;
+      esp_flash_get_size(ext_flash, &flash_size);
+      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, flash_size / 1024, id);
   } else {
       debugf("Failed to initialize external Flash: %s (0x%x)", esp_err_to_name(err), err);
   }

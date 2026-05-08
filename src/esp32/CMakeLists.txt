@@ -11,9 +11,11 @@ if(EXISTS "${_ffconf}")
     string(ASCII 9 _TAB)
     file(READ "${_ffconf}" _content)
     set(_orig "${_content}")
-    string(REGEX REPLACE "#define FF_USE_STRFUNC[ \t]+0" "#define FF_USE_STRFUNC${_TAB}1" _content "${_content}")
+    # IDF 6.0+: FF_USE_STRFUNC is now Kconfig-controlled via CONFIG_FATFS_USE_STRFUNC_*
+    # in a #if/#elif/#else block. Use CONFIG_FATFS_USE_STRFUNC_WITHOUT_CRLF_CONV=y in
+    # sdkconfig.defaults instead of patching the header directly.
     string(REGEX REPLACE "#define FF_FS_EXFAT[ \t]+0"    "#define FF_FS_EXFAT${_TAB}${_TAB}1" _content "${_content}")
-    # v5.5.1 ffconf.h references these Kconfig symbols bare (no #ifdef guard).
+    # IDF 6.0+ ffconf.h still references these Kconfig symbols bare (no #ifdef guard).
     # When disabled (default n), CONFIG_FATFS_USE_LABEL / CONFIG_FATFS_USE_DYN_BUFFERS
     # are not emitted in sdkconfig.h, causing an undeclared identifier compile error.
     # Replace with a literal 0 to keep the feature disabled without the missing symbol.
@@ -21,7 +23,7 @@ if(EXISTS "${_ffconf}")
     string(REGEX REPLACE "#define FF_USE_DYN_BUFFER[ \t]+CONFIG_FATFS_USE_DYN_BUFFERS" "#define FF_USE_DYN_BUFFER${_TAB}0" _content "${_content}")
     if(NOT _content STREQUAL _orig)
         file(WRITE "${_ffconf}" "${_content}")
-        message(STATUS "Patched ${_ffconf}: FF_USE_STRFUNC=1, FF_FS_EXFAT=1")
+        message(STATUS "Patched ${_ffconf}: FF_FS_EXFAT=1")
     endif()
     unset(_ffconf)
     unset(_TAB)
