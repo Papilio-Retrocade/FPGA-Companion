@@ -23,3 +23,15 @@ CONFIG_WIFI_LOG_ENABLE=y
 CONFIG_WIFI_LOG_SSID="YourSSID"
 CONFIG_WIFI_LOG_PASSWORD="YourPassword"
 # ────────────────────────────────────────────────────────────────────────────
+
+# ── OTA Firmware Update ─────────────────────────────────────────────────────
+# OTA requires two app partitions. Use partitions_ota.csv (4 MB flash).
+# SuperMini ESP32-S3 ships with 4 MB or 8 MB flash; verify with: esptool.py flash_id
+CONFIG_OTA_ENABLE=y
+CONFIG_OTA_PORT=3232
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+# Set to match your actual flash chip size (4MB is typical for SuperMini ESP32-S3)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+# ────────────────────────────────────────────────────────────────────────────

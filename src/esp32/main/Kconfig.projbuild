@@ -34,3 +34,30 @@ menu "WiFi UDP Logging"
         help
             Password for the WiFi network.
 endmenu
+
+menu "OTA Firmware Update"
+    config OTA_ENABLE
+        bool "Enable OTA HTTP update server"
+        default y
+        depends on WIFI_LOG_ENABLE
+        help
+            Start a minimal HTTP server after WiFi connects that accepts
+            firmware binary uploads via HTTP POST.
+
+            Requires a partition table with two OTA app slots.
+            Use partitions_ota.csv (needs 4 MB flash).
+
+            Upload new firmware:
+              curl -X POST http://<device-ip>:3232/update --data-binary @build/fpga_companion.bin
+
+            Check status / current version:
+              curl http://<device-ip>:3232/
+
+    config OTA_PORT
+        int "OTA server HTTP port"
+        default 3232
+        depends on OTA_ENABLE
+        help
+            TCP port the OTA HTTP server listens on. Default 3232 avoids
+            conflict with common services. Must be 1024-65535.
+endmenu

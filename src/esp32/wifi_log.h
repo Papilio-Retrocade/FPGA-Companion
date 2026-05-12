@@ -37,9 +37,17 @@ void wifi_log_early_init(void);
  */
 void wifi_log_init(void);
 
+/**
+ * Returns true if WiFi connected successfully and the UDP socket is open.
+ * Call after wifi_log_init(). Always returns false when WiFi logging is
+ * disabled, or if the connection attempt failed.
+ */
+bool wifi_log_is_connected(void);
+
 #else
 static inline void wifi_log_early_init(void) {}
 static inline void wifi_log_init(void) {}
+static inline bool wifi_log_is_connected(void) { return false; }
 #endif // CONFIG_WIFI_LOG_ENABLE
 
 #endif // WIFI_LOG_H

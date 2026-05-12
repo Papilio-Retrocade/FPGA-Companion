@@ -20,6 +20,7 @@
 #include "../sysctrl.h"
 
 #include "wifi_log.h"
+#include "ota_server.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
 #define USB_ERROR_CHECK(a) (a)
@@ -582,6 +583,9 @@ void mcu_hw_init(void) {
   debugf("  FPGA Reconfig  = GPIO%d", PIN_NUM_RECONFIG_N);
 
   wifi_log_init();
+
+  if (wifi_log_is_connected())
+    ota_server_start();
 
   mcu_hw_spi_init();
 #if CONFIG_USB_HOST_ENABLE

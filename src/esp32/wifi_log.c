@@ -260,4 +260,10 @@ void wifi_log_init(void) {
              WIFI_LOG_UDP_PORT, WIFI_LOG_UDP_PORT);
 }
 
+bool wifi_log_is_connected(void)
+{
+    /* Connected and UDP socket open means WiFi STA is up */
+    return s_udp_sock >= 0;
+}
+
 #endif /* CONFIG_WIFI_LOG_ENABLE */

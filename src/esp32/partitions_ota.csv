@@ -1,0 +1,28 @@
+# FPGA Companion OTA partition table — 4 MB flash
+#
+# Flash layout (4 MB = 0x400000 bytes):
+#
+#   0x000000  Bootloader (ESP-IDF second-stage)
+#   0x008000  Partition table
+#   0x009000  NVS (20 KB)
+#   0x00E000  OTA data  (8 KB)
+#   0x010000  app0 / ota_0  (1.9 MB)  ← first flash goes here
+#   0x200000  app1 / ota_1  (1.9 MB)  ← OTA updates land here, then alternate
+#
+# Current firmware is ~970 KB, so each 1.9 MB slot has ~1 MB headroom.
+#
+# IMPORTANT: Your board must have 4 MB (or larger) flash.
+#   SuperMini ESP32-S3 typically ships with 4 MB or 8 MB flash.
+#   If you have a 2 MB board, OTA cannot fit two app slots for this firmware.
+#   Verify with: esptool.py flash_id
+#
+# To use: add to sdkconfig.defaults (or run idf.py menuconfig):
+#   CONFIG_PARTITION_TABLE_CUSTOM=y
+#   CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+#   CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Name,     Type, SubType,  Offset,   Size,   Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xE000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1F0000,
+app1,       app,  ota_1,    0x200000, 0x1F0000,
