@@ -386,7 +386,7 @@ static char **config_parse_strlist(const char *str, char sep) {
   int i=0;
 
   while((s = strchr(str, sep))) {
-    ptr = reallocarray(ptr, sizeof(char*), i+1);
+    ptr = reallocarray(ptr, i+1, sizeof(char*));
     ptr[i] = malloc(s-str+1);
     strncpy(ptr[i], str, s-str+1);
     ptr[i][s-str] = '\0';
@@ -395,7 +395,7 @@ static char **config_parse_strlist(const char *str, char sep) {
   }
 
   // copy last string and append a null pointer to mark the end of the list
-  ptr = reallocarray(ptr, sizeof(char*), i+2);
+  ptr = reallocarray(ptr, i+2, sizeof(char*));
   ptr[i] = strdup(str);
   ptr[i+1] = NULL;
 

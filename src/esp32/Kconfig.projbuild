@@ -40,4 +40,13 @@ menu "WiFi UDP Logging"
         depends on WIFI_LOG_ENABLE
         help
             Password for the WiFi network.
+
+    config WIFI_LOG_LED_GPIO
+        int "WiFi status LED GPIO (WS2812)"
+        default 48
+        depends on WIFI_LOG_ENABLE
+        help
+            GPIO pin connected to the WS2812 RGB LED used to show WiFi
+            connection status. Green = connected, Red = failed.
+            SuperMini ESP32-S3 uses GPIO 48.
 endmenu

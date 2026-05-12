@@ -13,6 +13,7 @@ CONFIG_FATFS_SECTOR_512=y
 CONFIG_FATFS_USE_FASTSEEK=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_WL_SECTOR_SIZE_512=y
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
 
 # ── WiFi UDP Logging ────────────────────────────────────────────────────────
 # On your PC run:  ncat -u -l 7777   (Windows / Nmap)

@@ -56,8 +56,9 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
 					   data, sizeof(data), &data_length));
 
 	for(int idx=0;idx<MAX_HID_DEVICES;idx++)
-	  if(hid_device[idx].handle == hid_device_handle)
+	  if(hid_device[idx].handle == hid_device_handle) {
 	    hid_parse(&hid_device[idx].rep, &hid_device[idx].state, data, data_length);
+	  }
 
         break;
 	
@@ -112,6 +113,11 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 	    usb_debugf("Using HID entry %d", idx);
 	    
 	    if(parse_report_descriptor(report_desc, report_desc_len, &hid_device[idx].rep, NULL)) {
+	      usb_debugf("HID[%d] type=%d id_present=%d id=%d size=%d", idx,
+		 hid_device[idx].rep.type,
+		 hid_device[idx].rep.report_id_present,
+		 hid_device[idx].rep.report_id,
+		 hid_device[idx].rep.report_size);
 	      hid_device[idx].handle = hid_device_handle;
 	      if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 		hid_device[idx].state.joystick.js_index = hid_allocate_joystick();
@@ -119,15 +125,38 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 	      esp_err_t start_err = hid_host_device_start(hid_device_handle);
 	      usb_debugf("hid_host_device_start: %d", start_err);
 
+	      // Ask keyboards to use boot protocol so they send standard 8-byte reports
+	      // instead of NKRO reports with a report-ID prefix.  The request may return
+	      // an error for non-boot-interface keyboards (e.g. Rii R8) – that is fine;
+	      // USB_ERROR_CHECK is a no-op so execution continues either way.
+	      if(hid_device[idx].rep.type == REPORT_TYPE_KEYBOARD) {
+	        esp_err_t proto_err = hid_class_request_set_protocol(hid_device_handle, HID_REPORT_PROTOCOL_BOOT);
+	        usb_debugf("Set boot protocol: %d (ok if 0)", proto_err);
+	      }
+
 	      // DualShock 3 / Sixaxis requires a feature report to start streaming HID data.
 	      // Without this the device connects but never sends INPUT reports.
-	      uint8_t ds3_activate[] = { 0x42, 0x0c, 0x00, 0x00 };
-	      esp_err_t ds3_err = hid_class_request_set_report(hid_device_handle,
-	                            HID_REPORT_TYPE_FEATURE, 0xf4,
-	                            ds3_activate, sizeof(ds3_activate));
-	      usb_debugf("DS3 activate: %d (ok if 0 or ESP_ERR_NOT_SUPPORTED)", ds3_err);
-	    } else
-	      usb_debugf("ignoring device");
+	      // Only send this to joystick/gamepad devices — sending it to keyboards causes
+	      // them to accept the feature report (ESP_OK) and potentially reset/misbehave.
+	      if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK) {
+	        uint8_t ds3_activate[] = { 0x42, 0x0c, 0x00, 0x00 };
+	        esp_err_t ds3_err = hid_class_request_set_report(hid_device_handle,
+	                              HID_REPORT_TYPE_FEATURE, 0xf4,
+	                              ds3_activate, sizeof(ds3_activate));
+	        usb_debugf("DS3 activate: %d (ok if 0 or ESP_ERR_NOT_SUPPORTED)", ds3_err);
+	      }
+	    } else {
+	      usb_debugf("ignoring device - starting anyway to keep driver state clean");
+	      // Don't close an opened-but-never-started device: that leaves the HID
+	      // host pipe in an incomplete state that can stall hub enumeration for
+	      // subsequent devices.  Start it instead so the driver lifecycle is
+	      // correct; data from this interface is discarded in the callback
+	      // because the handle is never stored in hid_device[].
+	      hid_host_device_start(hid_device_handle);
+	    }
+	  } else {
+	    usb_debugf("Error, no more free HID entries - starting untracked");
+	    hid_host_device_start(hid_device_handle);
 	  }
 	}
         break;
@@ -307,7 +336,7 @@ static void usb_init(void) {
     */
     task_created = xTaskCreatePinnedToCore(usb_lib_task,
                                            "usb_events",
-                                           4096,
+                                           6144,
                                            xTaskGetCurrentTaskHandle(),
                                            2, NULL, 0);
     assert(task_created == pdTRUE);
@@ -323,7 +352,7 @@ static void usb_init(void) {
     const hid_host_driver_config_t hid_host_driver_config = {
         .create_background_task = true,
         .task_priority = 5,
-        .stack_size = 4096,
+        .stack_size = 8192,
         .core_id = 0,
         .callback = hid_host_device_callback,
         .callback_arg = NULL
@@ -336,7 +365,7 @@ static void usb_init(void) {
     * IMPORTANT: Task is necessary here while there is no possibility to interact
     * with USB device from the callback.
     */
-    task_created = xTaskCreate(&hid_host_task, "hid_task", 4 * 1024, NULL, 2, NULL);
+    task_created = xTaskCreate(&hid_host_task, "hid_task", 8 * 1024, NULL, 2, NULL);
     assert(task_created == pdTRUE);
 
 #if 0
@@ -451,7 +480,7 @@ void mcu_hw_spi_init(void) {
       .cs_io_num = PIN_NUM_FLASH_CS,
       // .io_mode = SPI_FLASH_FASTRD,
       .io_mode = SPI_FLASH_SLOWRD,
-      .freq_mhz = ESP_FLASH_20MHZ
+      .freq_mhz = 20
   };
 
   ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &device_config));
@@ -462,7 +491,9 @@ void mcu_hw_spi_init(void) {
       // Print out the ID and size
       uint32_t id;
       ESP_ERROR_CHECK(esp_flash_read_id(ext_flash, &id));
-      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, ext_flash->size / 1024, id);
+      uint32_t flash_size = 0;
+      esp_flash_get_size(ext_flash, &flash_size);
+      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, flash_size / 1024, id);
   } else {
       debugf("Failed to initialize external Flash: %s (0x%x)", esp_err_to_name(err), err);
   }

@@ -85,8 +85,8 @@ static void kbd_num2joy(char state, unsigned char code) {
   
 void kbd_parse(__attribute__((unused)) const hid_report_t *report, struct hid_kbd_state_S *state,
 	       const unsigned char *buffer, int nbytes) {
-  // we expect boot mode packets which are exactly 8 bytes long
-  if(nbytes != 8) return;
+  // we expect boot mode packets which are at least 8 bytes long
+  if(nbytes < 8) return;
   
   // check if modifier have changed
   if((buffer[0] != state->last_report[0]) && !osd_is_visible()) {
