@@ -436,7 +436,8 @@ static void handle_ble_device_result(struct ble_scan_result_evt_param *scan_rst)
     }
     GAP_DBG_PRINTF("\n");
 
-    if (uuid == ESP_GATT_UUID_HID_SVC) {    //jpg
+    if (uuid == ESP_GATT_UUID_HID_SVC ||
+        (uuid == 0 && (appearance & 0xFFC0) == 0x03C0)) {    //jpg
         add_ble_scan_result(scan_rst->bda, scan_rst->ble_addr_type, appearance, adv_name, adv_name_len, scan_rst->rssi);
     }
 }
@@ -739,7 +740,7 @@ esp_err_t esp_hid_ble_gap_adv_init(uint16_t appearance, const char *device_name)
         return ret;
     }
 
-    if ((ret = esp_bt_dev_set_device_name(device_name)) != ESP_OK) {
+    if ((ret = esp_bt_gap_set_device_name(device_name)) != ESP_OK) {
         ESP_LOGE(TAG, "GAP set_device_name failed: %d", ret);
         return ret;
     }

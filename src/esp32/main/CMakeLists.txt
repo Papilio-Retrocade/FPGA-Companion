@@ -20,6 +20,8 @@ idf_component_register(SRCS
 	"../mcu_hw.c"
 	"../wifi_log.c"
 	"../ota_server.c"
+	"../bt_hid.c"
+	"../esp_hid_gap.c"
 	${U8G2_SRC}	
 	../../u8g2/sys/bitmap/common/u8x8_d_bitmap.c
 
