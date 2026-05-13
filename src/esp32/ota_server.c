@@ -27,6 +27,7 @@
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 
 #include "ota_server.h"
@@ -201,6 +202,10 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     ESP_LOGI(TAG, "FPGA OTA update started: %d bytes → flash @ 0x%06x",
              req->content_len, FPGA_FLASH_ADDR);
 
+    /* Start timing */
+    int64_t time_start = esp_timer_get_time();
+    int64_t time_reset, time_erase;
+
     char *buf = malloc(FPGA_FLASH_BUF);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
@@ -216,22 +221,30 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
 
     /* Acquire SPI flash semaphore for exclusive access */
     mcu_hw_spi_flash_begin();
+    time_reset = esp_timer_get_time();
 
     /* Erase flash region */
     ESP_LOGI(TAG, "Erasing flash region @ 0x%06x (%d bytes)",
              FPGA_FLASH_ADDR, FPGA_FLASH_SIZE);
     mcu_hw_erase_flash_region(FPGA_FLASH_ADDR, FPGA_FLASH_SIZE);
-    ESP_LOGI(TAG, "Erase complete");
+    time_erase = esp_timer_get_time();
+    ESP_LOGI(TAG, "Erase complete - took %.1f seconds", (time_erase - time_reset) / 1000000.0);
 
     /* Receive and write bitstream */
     ESP_LOGI(TAG, "Writing FPGA bitstream");
     int remaining = req->content_len;
     int written   = 0;
     uint32_t addr = FPGA_FLASH_ADDR;
+    int64_t total_network_time = 0;
+    int64_t total_write_time = 0;
 
     while (remaining > 0) {
+        int64_t t1 = esp_timer_get_time();
         int recv = httpd_req_recv(req, buf,
                                   remaining < FPGA_FLASH_BUF ? remaining : FPGA_FLASH_BUF);
+        int64_t t2 = esp_timer_get_time();
+        total_network_time += (t2 - t1);
+        
         if (recv == HTTPD_SOCK_ERR_TIMEOUT) continue;
         if (recv <= 0) {
             ESP_LOGE(TAG, "Receive error (%d)", recv);
@@ -243,7 +256,10 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
             return ESP_FAIL;
         }
 
+        int64_t t3 = esp_timer_get_time();
         mcu_hw_write_flash(addr, (uint8_t*)buf, recv);
+        int64_t t4 = esp_timer_get_time();
+        total_write_time += (t4 - t3);
 
         addr      += recv;
         remaining -= recv;
@@ -257,10 +273,22 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
         }
     }
 
+    int64_t time_write = esp_timer_get_time();
     free(buf);
     mcu_hw_spi_flash_end();
 
+    int64_t time_total = time_write - time_start;
+    
     ESP_LOGI(TAG, "FPGA bitstream written successfully (%d bytes)", written);
+    ESP_LOGI(TAG, "=== FPGA OTA Timing Breakdown ===");
+    ESP_LOGI(TAG, "  Reset/setup:   %.1f s", (time_reset - time_start) / 1000000.0);
+    ESP_LOGI(TAG, "  Flash erase:   %.1f s", (time_erase - time_reset) / 1000000.0);
+    ESP_LOGI(TAG, "  Network recv:  %.1f s", total_network_time / 1000000.0);
+    ESP_LOGI(TAG, "  Flash write:   %.1f s", total_write_time / 1000000.0);
+    ESP_LOGI(TAG, "  Other/cleanup: %.1f s", (time_total - total_network_time - total_write_time - (time_erase - time_start)) / 1000000.0);
+    ESP_LOGI(TAG, "  TOTAL TIME:    %.1f s", time_total / 1000000.0);
+    ESP_LOGI(TAG, "  Throughput:    %.1f KB/s", (written / 1024.0) / (time_total / 1000000.0));
+    ESP_LOGI(TAG, "=================================");
     ESP_LOGI(TAG, "Releasing FPGA from reset - reconfiguration will start");
 
     /* Release FPGA from reset to trigger reconfiguration */

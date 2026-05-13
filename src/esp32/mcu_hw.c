@@ -20,8 +20,6 @@
 #include "../sysctrl.h"
 
 #include "wifi_log.h"
-#include "ota_server.h"
-#include "bt_hid.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
 #define USB_ERROR_CHECK(a) (a)
@@ -480,9 +478,8 @@ void mcu_hw_spi_init(void) {
       .host_id = SPI_HOST_ID,
       .cs_id = 0,
       .cs_io_num = PIN_NUM_FLASH_CS,
-      // .io_mode = SPI_FLASH_FASTRD,
-      .io_mode = SPI_FLASH_SLOWRD,
-      .freq_mhz = 20
+      .io_mode = SPI_FLASH_FASTRD,  // Changed from SLOWRD - should be much faster
+      .freq_mhz = 40  // Increased from 20 MHz - most SPI flash supports 40-80 MHz
   };
 
   ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &device_config));
@@ -585,17 +582,12 @@ void mcu_hw_init(void) {
 
   wifi_log_init();
 
-  if (wifi_log_is_connected())
-    ota_server_start();
-
   mcu_hw_spi_init();
 #if CONFIG_USB_HOST_ENABLE
   usb_init();
 #else
   debugf("USB host disabled — Serial/JTAG active for debugging");
 #endif
-
-  bt_hid_init();
 }
 
 void mcu_hw_main_loop(void) {
