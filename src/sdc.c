@@ -399,39 +399,64 @@ static int sdc_image_inserted(char drive, unsigned long size, char *ext) {
 #ifdef ESP_PLATFORM
 
 void sdc_load_core(char *fname) {
-    uint8_t corebuf[256];
+    /* Optimized with 4KB buffer and proper semaphore locking */
+    #define CORE_BUF_SIZE 4096
+    uint8_t *corebuf = malloc(CORE_BUF_SIZE);
+    if (!corebuf) {
+        debugf("Out of memory for core buffer");
+        return;
+    }
+
     FIL f;
 
     sdc_lock();
-    // mcu_hw_spi_flash_begin();    // This is not working... Need to figure out why
 
     if (f_open(&f, fname, FA_READ) != FR_OK) {
         debugf("Cannot open core file");
+        free(corebuf);
+        sdc_unlock();
         return;
     }
-    int addr = 0x100000;        // Second bit file location in SPI Flash - 1MB - First bit file needs multiboot enabled with SPI Location of 100000. Trigger reconfig_n to jump to this location.
-    unsigned int cnt = 0;
-    debugf("Starting Erase\n");
-    mcu_hw_erase_flash_region(addr, 0x100000);    // Bit file size for Tang Primer 20k is 1MB
-    debugf("Starting Flashing\n");
-    while (!f_eof(&f)) {
-      f_read(&f, corebuf, 256, &cnt);
-      mcu_hw_write_flash(addr, corebuf, cnt);
-      addr += cnt;
-      cnt = 0;
-    }
-    // write remaining data in buffer
-    if (cnt > 0) {
-        mcu_hw_write_flash(addr, corebuf, cnt);
-        addr += cnt;
-    }
-    f_close(&f);
 
-    // mcu_hw_spi_flash_end();
+    int addr = 0x100000;  // FPGA bitstream location in SPI Flash
+    unsigned int cnt = 0;
+    unsigned int total_written = 0;
+    unsigned long file_size = f_size(&f);
+
+    debugf("Starting FPGA flash programming (%lu bytes)\n", file_size);
+
+    /* Acquire flash semaphore for exclusive access */
+    mcu_hw_spi_flash_begin();
+
+    debugf("Erasing flash region (2MB)\n");
+    mcu_hw_erase_flash_region(addr, 0x200000);  // Erase 2MB for safety
+
+    debugf("Writing bitstream\n");
+    while (!f_eof(&f)) {
+        f_read(&f, corebuf, CORE_BUF_SIZE, &cnt);
+        if (cnt > 0) {
+            mcu_hw_write_flash(addr, corebuf, cnt);
+            addr += cnt;
+            total_written += cnt;
+
+            /* Progress indicator every 64KB */
+            if (total_written % 65536 == 0) {
+                debugf("Progress: %u / %lu bytes (%.1f%%)\n",
+                       total_written, file_size,
+                       100.0 * total_written / file_size);
+            }
+        }
+    }
+
+    f_close(&f);
+    mcu_hw_spi_flash_end();
     sdc_unlock();
 
-    debugf("Core ready. Please reboot");
+    debugf("FPGA flash complete (%u bytes). Trigger reconfig to boot new bitstream.\n",
+           total_written);
 
+    free(corebuf);
+    #undef CORE_BUF_SIZE
 }
 
 #endif

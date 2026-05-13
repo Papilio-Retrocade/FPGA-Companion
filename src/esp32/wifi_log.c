@@ -46,6 +46,7 @@
 #include "led_strip.h"
 
 #include "wifi_log.h"
+#include "ota_server.h"
 
 /* SuperMini ESP32-S3 has the WS2812 on GPIO48. Override via Kconfig if needed. */
 #ifndef CONFIG_WIFI_LOG_LED_GPIO
@@ -169,6 +170,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "WiFi connected - IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        
+        /* Start OTA server now that WiFi is connected */
+        ota_server_start();
     }
 }
 

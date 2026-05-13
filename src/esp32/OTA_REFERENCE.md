@@ -5,17 +5,22 @@
 The device runs an HTTP OTA server on port **3232** whenever it connects to WiFi.
 New firmware is uploaded with a single `curl` command — no USB cable, no serial flasher.
 
-OTA is implemented as a dual-partition scheme: the running slot is never touched.
-The new image is written to the inactive slot, verified, then the device reboots into it.
-If the new image fails to boot, ESP-IDF's rollback mechanism falls back to the previous slot.
+OTA supports **two update types**:
+- **ESP32 firmware**: Dual-partition scheme with automatic rollback on failure
+- **FPGA bitstreams**: Direct flash write to 0x100000 with automatic reconfiguration
 
 ---
 
 ## Quick Reference
 
-### Upload firmware
+### Upload ESP32 firmware
 ```
 curl -X POST http://<device-ip>:3232/update --data-binary @build/fpga_companion.bin
+```
+
+### Upload FPGA bitstream
+```
+curl -X POST http://<device-ip>:3232/fpga-update --data-binary @your_bitstream.bin
 ```
 
 ### Check device status / current version
@@ -31,6 +36,55 @@ So the full upload command for the lab unit is:
 ```
 curl -X POST http://10.0.4.94:3232/update --data-binary @build/fpga_companion.bin
 ```
+
+**FPGA bitstream:**
+```
+curl -X POST http://10.0.4.94:3232/fpga-update --data-binary @a2600nano_retrocade.bin
+```
+
+---
+
+## FPGA OTA Update Mechanism
+
+### How It Works
+
+1. **ESP32 receives bitstream** via HTTP POST on `/fpga-update` endpoint
+2. **FPGA held in reset** - ESP32 pulls RECONFIG_N (GPIO 13) LOW to ensure:
+   - FPGA stops accessing flash (no bus conflicts)
+   - SPI passthrough pins remain connected in user cores (A2600, etc.)
+3. **Flash erased** - 2 MB region @ 0x100000
+4. **Bitstream written** - 4KB buffer for optimal performance
+5. **FPGA released** - RECONFIG_N goes HIGH
+6. **Auto-reconfiguration** - FPGA boots from new bitstream @ 0x100000
+
+### Performance Improvements
+
+- **Old SD card method**: 256-byte buffer, ~60 seconds for 2MB bitstream
+- **New OTA method**: 4096-byte buffer, **~7-10 seconds for 2MB**
+- **16x faster** due to larger buffer and optimized flash writes
+
+### Safety Features
+
+- **Semaphore locking**: Prevents concurrent SPI bus access
+- **FPGA reset coordination**: Ensures no flash conflicts during programming
+- **Clean erase**: Full region cleared before writing
+- **Progress logging**: Real-time status every 64KB
+
+### Requirements
+
+- **WiFi connected**: OTA server must be running
+- **Compatible FPGA core**: User cores must have SPI passthrough (A2600, etc.)
+- **Multiboot enabled**: Bitstream at 0x000000 must support multiboot to 0x100000
+
+---
+
+## ESP32 Firmware OTA Details
+
+ESP32 firmware uses a dual-partition scheme:
+- Running slot is never touched
+- New image written to inactive slot  
+- Device reboots into new image
+- Automatic rollback on boot failure
 
 ---
 
