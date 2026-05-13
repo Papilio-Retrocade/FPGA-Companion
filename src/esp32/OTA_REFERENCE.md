@@ -1,0 +1,142 @@
+# FPGA Companion OTA Firmware Update Reference
+
+## Overview
+
+The device runs an HTTP OTA server on port **3232** whenever it connects to WiFi.
+New firmware is uploaded with a single `curl` command — no USB cable, no serial flasher.
+
+OTA is implemented as a dual-partition scheme: the running slot is never touched.
+The new image is written to the inactive slot, verified, then the device reboots into it.
+If the new image fails to boot, ESP-IDF's rollback mechanism falls back to the previous slot.
+
+---
+
+## Quick Reference
+
+### Upload firmware
+```
+curl -X POST http://<device-ip>:3232/update --data-binary @build/fpga_companion.bin
+```
+
+### Check device status / current version
+```
+curl http://<device-ip>:3232/
+```
+
+### Known device IP (lab unit)
+```
+10.0.4.94
+```
+So the full upload command for the lab unit is:
+```
+curl -X POST http://10.0.4.94:3232/update --data-binary @build/fpga_companion.bin
+```
+
+---
+
+## Prerequisites
+
+| Requirement | Detail |
+|---|---|
+| WiFi connected | OTA server only starts when WiFi connects successfully |
+| Build complete | `idf.py build` must succeed first — binary is at `build/fpga_companion.bin` |
+| Port open | Port 3232 TCP must be reachable (same LAN is fine; no firewall rule needed on most routers) |
+
+---
+
+## Finding the Device IP
+
+The IP is logged when WiFi connects. Capture it with the UDP log listener:
+
+**Windows (ncat/nmap):**
+```
+ncat -u -l 7777
+```
+
+**Linux / macOS:**
+```
+nc -u -l -p 7777
+```
+
+Look for a line like:
+```
+I (3421) wifi_log: got ip: 10.0.4.94
+```
+
+Alternatively, check your router's DHCP client list for a device named `FPGA-Companion` or `Espressif`.
+
+---
+
+## Full Build → Flash Workflow
+
+Run from `C:\development\FPGA-Companion\src\esp32`:
+
+```powershell
+# 1. Build
+idf.py build
+
+# 2. Upload over the air
+curl -X POST http://10.0.4.94:3232/update --data-binary @build/fpga_companion.bin
+```
+
+The device reboots automatically after a successful upload (~2–5 seconds after `curl` returns).
+
+---
+
+## Status Response
+
+`GET http://<device-ip>:3232/` returns plain text like:
+
+```
+FPGA Companion OTA Server
+=========================
+Running partition : ota_0
+Firmware version  : 0.1.0
+Build date        : May 11 2026 14:32:07
+
+To upload new firmware:
+  curl -X POST http://<device-ip>:3232/update --data-binary @build/fpga_companion.bin
+```
+
+---
+
+## Configuration (sdkconfig.defaults)
+
+| Key | Default | Description |
+|---|---|---|
+| `CONFIG_OTA_ENABLE` | `y` | Enable OTA server (disable to save ~20 KB flash) |
+| `CONFIG_OTA_PORT` | `3232` | HTTP server port |
+| `CONFIG_WIFI_LOG_ENABLE` | `y` | Required — OTA server only starts if WiFi is enabled |
+| `CONFIG_WIFI_LOG_SSID` | `"YourSSID"` | Set in `sdkconfig.defaults.local` |
+| `CONFIG_WIFI_LOG_PASSWORD` | `"YourPassword"` | Set in `sdkconfig.defaults.local` |
+| `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` | `partitions_ota.csv` | Dual-slot OTA partition table |
+| `CONFIG_ESPTOOLPY_FLASHSIZE` | `"4MB"` | Match your actual flash chip |
+
+WiFi credentials live in `sdkconfig.defaults.local` (gitignored). Copy the example:
+```
+sdkconfig.defaults.local.example  →  sdkconfig.defaults.local
+```
+
+---
+
+## First-Time USB Flash
+
+OTA requires the OTA partition table to already be on the device.
+On a brand-new board, flash once over USB:
+
+```powershell
+idf.py flash
+```
+
+After that, all subsequent updates can use OTA.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `curl: (7) Failed to connect` | Device not on WiFi or wrong IP | Check UDP log for current IP |
+| `curl: (52) Empty reply` | OTA not enabled or WiFi not connected yet | Wait for boot to complete (~5 s), check `sdkconfig.defaults` |
+| Upload succeeds but device doesn't boot new firmware | Bad binary / wrong target | Ensure `idf.py build` completed without errors; device rolls back automatically |
+| `400 Bad Request` | Empty POST body | Ensure `@build/fpga_companion.bin` path is correct and file exists |
