@@ -57,3 +57,5 @@ src/esp32/managed_components/
 src/FPGA-Companion.code-workspace
 src/esp32/debug.log
 src/esp32/dependencies.lock
+src/esp32/sdkconfig
+
