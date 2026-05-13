@@ -353,3 +353,69 @@ const char* jtag_gowin_device_name(uint32_t idcode)
             return "Unknown";
     }
 }
+
+/* ========================================================================= */
+/* Streaming API Implementation                                             */
+/* ========================================================================= */
+
+esp_err_t jtag_gowin_program_sram_begin(uint32_t *idcode_out)
+{
+    ESP_LOGI(TAG, "Starting SRAM programming (streaming mode)");
+    
+    /* 1. Reset TAP */
+    jtag_goto_idle();
+    
+    /* 2. Verify device */
+    uint32_t idcode;
+    jtag_gowin_read_idcode(&idcode);
+    if ((idcode & 0x0FFFFFFF) != (GOWIN_IDCODE_GW2A_18 & 0x0FFFFFFF)) {
+        ESP_LOGW(TAG, "Unexpected IDCODE 0x%08lX (expected 0x%08lX)",
+                 idcode, GOWIN_IDCODE_GW2A_18);
+        /* Continue anyway - might be different variant */
+    }
+    
+    if (idcode_out) {
+        *idcode_out = idcode;
+    }
+    
+    /* 3. Load JPROGRAM instruction - clears SRAM configuration */
+    ESP_LOGI(TAG, "Erasing SRAM configuration");
+    jtag_ir_scan(GOWIN_IR_JPROGRAM);
+    jtag_run_idle(10000);  // Wait for erase (10ms)
+    
+    /* 4. Load CFG_IN instruction - prepare to receive bitstream */
+    ESP_LOGI(TAG, "Loading CFG_IN instruction");
+    jtag_ir_scan(GOWIN_IR_CFG_IN);
+    
+    ESP_LOGI(TAG, "Ready to receive bitstream data");
+    
+    return ESP_OK;
+}
+
+esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length)
+{
+    if (!data || length == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    /* Shift data into DR */
+    jtag_dr_scan(data, NULL, length * 8);
+    
+    return ESP_OK;
+}
+
+esp_err_t jtag_gowin_program_sram_end(void)
+{
+    /* 1. Load JSTART instruction - start FPGA */
+    ESP_LOGI(TAG, "Starting FPGA");
+    jtag_ir_scan(GOWIN_IR_JSTART);
+    jtag_run_idle(100000);  // Wait for startup (100ms)
+    
+    /* 2. Return to idle */
+    jtag_goto_idle();
+    
+    ESP_LOGI(TAG, "SRAM programming complete");
+    
+    return ESP_OK;
+}
+

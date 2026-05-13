@@ -104,4 +104,51 @@ esp_err_t jtag_gowin_verify(void);
  */
 const char* jtag_gowin_device_name(uint32_t idcode);
 
+/* ========================================================================= */
+/* Streaming API - For Large Bitstreams                                     */
+/* ========================================================================= */
+
+/**
+ * Begin streaming SRAM programming
+ * 
+ * Initializes TAP, verifies device, and prepares for data streaming.
+ * Must be followed by one or more calls to jtag_gowin_program_sram_write(),
+ * then jtag_gowin_program_sram_end().
+ * 
+ * @param idcode_out  Optional pointer to receive device IDCODE
+ * @return ESP_OK on success
+ * 
+ * Example:
+ *   uint32_t idcode;
+ *   jtag_gowin_program_sram_begin(&idcode);
+ *   while (more_data) {
+ *       jtag_gowin_program_sram_write(chunk, chunk_len);
+ *   }
+ *   jtag_gowin_program_sram_end();
+ */
+esp_err_t jtag_gowin_program_sram_begin(uint32_t *idcode_out);
+
+/**
+ * Stream bitstream chunk to FPGA SRAM
+ * 
+ * Must be called between jtag_gowin_program_sram_begin() and 
+ * jtag_gowin_program_sram_end().
+ * 
+ * @param data    Bitstream chunk data
+ * @param length  Chunk length in bytes
+ * @return ESP_OK on success
+ */
+esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length);
+
+/**
+ * Complete streaming SRAM programming
+ * 
+ * Finalizes programming and starts FPGA configuration.
+ * Must be called after jtag_gowin_program_sram_begin() and 
+ * jtag_gowin_program_sram_write().
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t jtag_gowin_program_sram_end(void);
+
 #endif /* JTAG_GOWIN_H */

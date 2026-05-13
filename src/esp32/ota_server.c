@@ -328,68 +328,82 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
     ESP_LOGI(TAG, "FPGA JTAG SRAM programming started: %d bytes", req->content_len);
     int64_t time_start = esp_timer_get_time();
 
-    /* Allocate buffer for bitstream */
-    char *buf = malloc(req->content_len);
-    if (!buf) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_FAIL;
-    }
-
-    /* Receive entire bitstream */
-    ESP_LOGI(TAG, "Receiving bitstream");
-    int remaining = req->content_len;
-    int received  = 0;
-
-    while (remaining > 0) {
-        int recv = httpd_req_recv(req, buf + received, remaining);
-        if (recv == HTTPD_SOCK_ERR_TIMEOUT) continue;
-        if (recv <= 0) {
-            ESP_LOGE(TAG, "Receive error (%d)", recv);
-            free(buf);
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
-            return ESP_FAIL;
-        }
-        remaining -= recv;
-        received  += recv;
-        
-        if (received % 65536 == 0) {
-            ESP_LOGI(TAG, "Received: %d / %d bytes", received, req->content_len);
-        }
-    }
-
-    int64_t time_received = esp_timer_get_time();
-    ESP_LOGI(TAG, "Bitstream received (%.1f s)", (time_received - time_start) / 1000000.0);
-
     /* Initialize JTAG (if not already initialized) */
     static bool jtag_initialized = false;
     if (!jtag_initialized) {
         err = jtag_gowin_init(NULL);  /* Use default pins */
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "JTAG initialization failed");
-            free(buf);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JTAG init failed");
             return ESP_FAIL;
         }
         jtag_initialized = true;
     }
 
-    /* Verify FPGA is present */
+    /* Begin streaming SRAM programming */
     uint32_t idcode;
-    err = jtag_gowin_read_idcode(&idcode);
+    err = jtag_gowin_program_sram_begin(&idcode);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read FPGA IDCODE");
-        free(buf);
+        ESP_LOGE(TAG, "Failed to begin JTAG programming");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, 
                            "FPGA not detected via JTAG");
         return ESP_FAIL;
     }
 
-    /* Program SRAM */
-    err = jtag_gowin_program_sram((uint8_t*)buf, req->content_len);
-    free(buf);
+    /* Allocate chunk buffer (4KB - much smaller than full bitstream) */
+    char *chunk_buf = malloc(OTA_RECV_BUF);
+    if (!chunk_buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
 
+    /* Stream bitstream in chunks */
+    int remaining = req->content_len;
+    int received  = 0;
+    bool error = false;
+
+    while (remaining > 0 && !error) {
+        int to_recv = (remaining < OTA_RECV_BUF) ? remaining : OTA_RECV_BUF;
+        int recv = httpd_req_recv(req, chunk_buf, to_recv);
+        
+        if (recv == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        
+        if (recv <= 0) {
+            ESP_LOGE(TAG, "Receive error (%d)", recv);
+            free(chunk_buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+        
+        /* Write chunk to FPGA via JTAG */
+        err = jtag_gowin_program_sram_write((uint8_t*)chunk_buf, recv);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JTAG write failed");
+            error = true;
+            break;
+        }
+        
+        remaining -= recv;
+        received  += recv;
+        
+        if (received % 65536 == 0) {
+            ESP_LOGI(TAG, "Programmed: %d / %d bytes", received, req->content_len);
+        }
+    }
+
+    free(chunk_buf);
+
+    if (error) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Programming failed");
+        return ESP_FAIL;
+    }
+
+    /* Complete SRAM programming */
+    err = jtag_gowin_program_sram_end();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "JTAG programming failed");
+        ESP_LOGE(TAG, "JTAG programming end failed");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Programming failed");
         return ESP_FAIL;
     }
