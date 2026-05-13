@@ -35,7 +35,7 @@
 #define BT_SCAN_DURATION_S   5
 
 /* Re-scan interval when slots are available (milliseconds) */
-#define BT_RESCAN_MS         60000
+#define BT_RESCAN_MS         10000
 
 /* -------------------------------------------------------------------------
  * Device table — mirrors the USB hid_device[] table in mcu_hw.c
