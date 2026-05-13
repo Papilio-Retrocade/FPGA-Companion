@@ -32,6 +32,7 @@
 
 #include "ota_server.h"
 #include "../mcu_hw.h"
+#include "jtag_gowin.h"
 
 static const char *TAG = "ota_server";
 
@@ -50,7 +51,7 @@ static esp_err_t handle_status(httpd_req_t *req)
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_app_desc_t  *app     = esp_app_get_description();
 
-    char buf[512];
+    char buf[768];
     int  n = snprintf(buf, sizeof(buf),
         "FPGA Companion OTA Server\r\n"
         "=========================\r\n"
@@ -58,11 +59,20 @@ static esp_err_t handle_status(httpd_req_t *req)
         "Firmware version  : %s\r\n"
         "Build date        : %s %s\r\n"
         "\r\n"
-        "To upload new firmware:\r\n"
-        "  curl -X POST http://<device-ip>:%d/update --data-binary @build/fpga_companion.bin\r\n",
+        "Upload commands:\r\n"
+        "  ESP32 firmware (dual-partition OTA):\r\n"
+        "    curl -X POST http://<device-ip>:%d/update --data-binary @build/fpga_companion.bin\r\n"
+        "\r\n"
+        "  FPGA bitstream to flash (persistent, slower):\r\n"
+        "    curl -X POST http://<device-ip>:%d/fpga-update --data-binary @bitstream.bin\r\n"
+        "\r\n"
+        "  FPGA bitstream to SRAM via JTAG (volatile, fast, no flash wear):\r\n"
+        "    curl -X POST http://<device-ip>:%d/fpga-jtag-sram --data-binary @bitstream.fs\r\n",
         running ? running->label : "unknown",
         app->version,
         app->date, app->time,
+        CONFIG_OTA_PORT,
+        CONFIG_OTA_PORT,
         CONFIG_OTA_PORT);
 
     httpd_resp_set_type(req, "text/plain");
@@ -303,6 +313,102 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
 }
 
 /* =========================================================================
+ * POST /fpga-jtag-sram — program FPGA SRAM via JTAG (no flash needed)
+ * ========================================================================= */
+
+static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
+{
+    esp_err_t err;
+
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "FPGA JTAG SRAM programming started: %d bytes", req->content_len);
+    int64_t time_start = esp_timer_get_time();
+
+    /* Allocate buffer for bitstream */
+    char *buf = malloc(req->content_len);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    /* Receive entire bitstream */
+    ESP_LOGI(TAG, "Receiving bitstream");
+    int remaining = req->content_len;
+    int received  = 0;
+
+    while (remaining > 0) {
+        int recv = httpd_req_recv(req, buf + received, remaining);
+        if (recv == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (recv <= 0) {
+            ESP_LOGE(TAG, "Receive error (%d)", recv);
+            free(buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+        remaining -= recv;
+        received  += recv;
+        
+        if (received % 65536 == 0) {
+            ESP_LOGI(TAG, "Received: %d / %d bytes", received, req->content_len);
+        }
+    }
+
+    int64_t time_received = esp_timer_get_time();
+    ESP_LOGI(TAG, "Bitstream received (%.1f s)", (time_received - time_start) / 1000000.0);
+
+    /* Initialize JTAG (if not already initialized) */
+    static bool jtag_initialized = false;
+    if (!jtag_initialized) {
+        err = jtag_gowin_init(NULL);  /* Use default pins */
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JTAG initialization failed");
+            free(buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JTAG init failed");
+            return ESP_FAIL;
+        }
+        jtag_initialized = true;
+    }
+
+    /* Verify FPGA is present */
+    uint32_t idcode;
+    err = jtag_gowin_read_idcode(&idcode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read FPGA IDCODE");
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, 
+                           "FPGA not detected via JTAG");
+        return ESP_FAIL;
+    }
+
+    /* Program SRAM */
+    err = jtag_gowin_program_sram((uint8_t*)buf, req->content_len);
+    free(buf);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "JTAG programming failed");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Programming failed");
+        return ESP_FAIL;
+    }
+
+    int64_t time_total = esp_timer_get_time() - time_start;
+    ESP_LOGI(TAG, "=== FPGA JTAG SRAM Programming Complete ===");
+    ESP_LOGI(TAG, "  Total time: %.1f s", time_total / 1000000.0);
+    ESP_LOGI(TAG, "  Device:     %s (IDCODE 0x%08lX)", 
+             jtag_gowin_device_name(idcode), idcode);
+    ESP_LOGI(TAG, "===========================================");
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "FPGA SRAM programmed successfully via JTAG!\r\n"
+                            "Configuration is volatile - will be lost on power cycle.\r\n");
+
+    return ESP_OK;
+}
+
+/* =========================================================================
  * Public API
  * ========================================================================= */
 
@@ -310,7 +416,7 @@ void ota_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_OTA_PORT;
-    cfg.max_uri_handlers = 3;  /* status, ESP32 update, FPGA update */
+    cfg.max_uri_handlers = 4;  /* status, ESP32 update, FPGA flash update, FPGA JTAG update */
     cfg.stack_size       = 8192;
 
     httpd_handle_t server = NULL;
@@ -340,11 +446,20 @@ void ota_server_start(void)
     };
     httpd_register_uri_handler(server, &fpga_update_uri);
 
+    static const httpd_uri_t fpga_jtag_sram_uri = {
+        .uri     = "/fpga-jtag-sram",
+        .method  = HTTP_POST,
+        .handler = handle_fpga_jtag_sram,
+    };
+    httpd_register_uri_handler(server, &fpga_jtag_sram_uri);
+
     ESP_LOGI(TAG, "OTA server ready on port %d", CONFIG_OTA_PORT);
-    ESP_LOGI(TAG, "  Status      : curl http://<device-ip>:%d/", CONFIG_OTA_PORT);
-    ESP_LOGI(TAG, "  ESP32 upload: curl -X POST http://<device-ip>:%d/update --data-binary @build/fpga_companion.bin",
+    ESP_LOGI(TAG, "  Status         : curl http://<device-ip>:%d/", CONFIG_OTA_PORT);
+    ESP_LOGI(TAG, "  ESP32 upload   : curl -X POST http://<device-ip>:%d/update --data-binary @build/fpga_companion.bin",
              CONFIG_OTA_PORT);
-    ESP_LOGI(TAG, "  FPGA upload : curl -X POST http://<device-ip>:%d/fpga-update --data-binary @your_bitstream.bin",
+    ESP_LOGI(TAG, "  FPGA flash     : curl -X POST http://<device-ip>:%d/fpga-update --data-binary @your_bitstream.bin",
+             CONFIG_OTA_PORT);
+    ESP_LOGI(TAG, "  FPGA JTAG SRAM : curl -X POST http://<device-ip>:%d/fpga-jtag-sram --data-binary @your_bitstream.fs",
              CONFIG_OTA_PORT);
 }
 
