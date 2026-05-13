@@ -35,7 +35,7 @@
 #define BT_SCAN_DURATION_S   5
 
 /* Re-scan interval when slots are available (milliseconds) */
-#define BT_RESCAN_MS         30000
+#define BT_RESCAN_MS         60000
 
 /* -------------------------------------------------------------------------
  * Device table — mirrors the USB hid_device[] table in mcu_hw.c
@@ -220,8 +220,6 @@ static void bt_hid_scan_task(void *arg)
             size_t                num_results = 0;
             esp_hid_scan_result_t *results    = NULL;
             esp_hid_scan(BT_SCAN_DURATION_S, &num_results, &results);
-            ESP_LOGI(TAG, "Scan complete: %d device(s) found",
-                     (int)num_results);
 
             for (esp_hid_scan_result_t *r = results; r; r = r->next) {
                 if (r->transport != ESP_HID_TRANSPORT_BLE) continue;
