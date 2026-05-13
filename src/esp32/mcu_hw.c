@@ -20,6 +20,7 @@
 #include "../sysctrl.h"
 
 #include "wifi_log.h"
+#include "bt_hid.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
 #define USB_ERROR_CHECK(a) (a)
@@ -588,6 +589,8 @@ void mcu_hw_init(void) {
 #else
   debugf("USB host disabled — Serial/JTAG active for debugging");
 #endif
+
+  bt_hid_init();
 }
 
 void mcu_hw_main_loop(void) {
