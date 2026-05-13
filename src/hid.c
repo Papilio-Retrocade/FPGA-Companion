@@ -258,8 +258,8 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
         joy |= (0x10<<i);
 
   // ... D-pad buttons (4-7) drive directions: up, right, down, left
-  // (common on DS3/Sixaxis; on Xbox these are shoulder/trigger buttons so they
-  //  only fire when physically pressed, not from dpad)
+  // (common on DS3/Sixaxis; on other gamepads these may be shoulder buttons
+  //  but they will simply OR into directions without causing harm)
   static const uint8_t dpad_joy[4] = { 0x08, 0x01, 0x04, 0x02 }; // up, right, down, left
   for(int i=0;i<4;i++)
     if(report->joystick_mouse.button[i+4].bitmask &&
@@ -267,79 +267,30 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
        report->joystick_mouse.button[i+4].bitmask)
       joy |= dpad_joy[i];
 
-  // HAT switch → directions (e.g. Xbox BLE dpad)
-  // When hat_min > 0, the minimum value is center/neutral (Xbox-style: min=1=neutral, 2-8=directions).
-  // When hat_min == 0, values above hat_max are neutral (PS-style: 0-7=directions, 0xF=neutral).
-  if(report->joystick_mouse.hat.size) {
-    int hat_val = collect_bits(buffer, report->joystick_mouse.hat.offset,
-                               report->joystick_mouse.hat.size, false);
-    int hat_min = report->joystick_mouse.hat.logical.min;
-    int hat_max = report->joystick_mouse.hat.logical.max;
-    int pos = -1;
-    if(hat_min > 0) {
-      // Xbox-style: neutral=0 (below logical min); hat_min..hat_max = N,NE,E,SE,S,SW,W,NW
-      if(hat_val >= hat_min && hat_val <= hat_max)
-        pos = hat_val - hat_min;
-    } else {
-      // PS/standard: values in [min, max] are N,NE,E,SE,S,SW,W,NW; outside range = neutral
-      if(hat_val >= hat_min && hat_val <= hat_max)
-        pos = hat_val - hat_min;
-    }
-    if(pos >= 0 && pos < 8) {
-      static const uint8_t hat_to_joy[8] = {
-        0x08,       // N  = up
-        0x08|0x01,  // NE = up+right
-        0x01,       // E  = right
-        0x04|0x01,  // SE = down+right
-        0x04,       // S  = down
-        0x04|0x02,  // SW = down+left
-        0x02,       // W  = left
-        0x08|0x02,  // NW = up+left
-      };
-      joy |= hat_to_joy[pos];
-    }
-  }
-
-  // OSD toggle button: prefer btn[11] (Menu/≡ on Xbox BLE: order is LS,RS,View,Menu)
-  // fall back to btn[9] (Options on PS4/PS5 BLE: order is Share,Options,L3,R3)
-  // then btn[0] for simple controllers.
-  int sel_idx = report->joystick_mouse.button[11].bitmask ? 11 :
-                report->joystick_mouse.button[9].bitmask  ? 9 :
-                report->joystick_mouse.button[8].bitmask  ? 8 : 0;
-
-  // ... and eight extra buttons (8-11: L2/R2/L1/R1); skip the sel button so it
-  // isn't forwarded to the core as a game button press
+  // ... and eight extra buttons (8-11: L2/R2/L1/R1)
   unsigned char btn_extra = 0;
   for(int i=8;i<12;i++)
-    if(i != sel_idx &&
-       report->joystick_mouse.button[i].bitmask &&
+    if(report->joystick_mouse.button[i].bitmask &&
        buffer[report->joystick_mouse.button[i].byte_offset] & 
       report->joystick_mouse.button[i].bitmask) 
       btn_extra |= (1<<(i-8));
 
-  // Map axis to digital directions, scaled to logical range (supports 8-bit and 16-bit axes)
-  int ax_max = report->joystick_mouse.axis[0].logical.max;
-  int ay_max = report->joystick_mouse.axis[1].logical.max;
-  if(ax_max < 1) ax_max = 255;
-  if(ay_max < 1) ay_max = 255;
-  if(a[0] > ax_max * 3 / 4) joy |= 0x01;  // right
-  if(a[0] < ax_max / 4)     joy |= 0x02;  // left
-  if(a[1] > ay_max * 3 / 4) joy |= 0x04;  // down
-  if(a[1] < ay_max / 4)     joy |= 0x08;  // up
+  // map directions to digital
+  if(a[0] > 0xc0) joy |= 0x01;
+  if(a[0] < 0x40) joy |= 0x02;
+  if(a[1] > 0xc0) joy |= 0x04;
+  if(a[1] < 0x40) joy |= 0x08;
 
-  // Normalize axes to 0-255 for SPI and apply proportional deadzone
-  int ax_center = ax_max / 2;
-  int ay_center = ay_max / 2;
-  int ax_dead = ax_max / 16;
-  int ay_dead = ay_max / 16;
-  int ax_raw = (a[0] > ax_center - ax_dead && a[0] < ax_center + ax_dead) ? ax_center : a[0];
-  int ay_raw = (a[1] > ay_center - ay_dead && a[1] < ay_center + ay_dead) ? ay_center : a[1];
-  uint8_t ax = (ax_max > 255) ? (uint8_t)((ax_raw * 255 + ax_max / 2) / ax_max) : (uint8_t)ax_raw;
-  uint8_t ay = (ay_max > 255) ? (uint8_t)((ay_raw * 255 + ay_max / 2) / ay_max) : (uint8_t)ay_raw;
+  // Apply deadzone: clamp to center if within ±16 of 128 to suppress drift
+  #define JOY_DEADZONE 16
+  #define JOY_CENTER   128
+  int ax = (a[0] > JOY_CENTER - JOY_DEADZONE && a[0] < JOY_CENTER + JOY_DEADZONE) ? JOY_CENTER : a[0];
+  int ay = (a[1] > JOY_CENTER - JOY_DEADZONE && a[1] < JOY_CENTER + JOY_DEADZONE) ? JOY_CENTER : a[1];
 
-  unsigned char sel_btn = (report->joystick_mouse.button[sel_idx].bitmask &&
-    (buffer[report->joystick_mouse.button[sel_idx].byte_offset] &
-     report->joystick_mouse.button[sel_idx].bitmask)) ? 1 : 0;
+  // Select button (DS3 button 0) toggles OSD on rising edge
+  unsigned char sel_btn = (report->joystick_mouse.button[0].bitmask &&
+    (buffer[report->joystick_mouse.button[0].byte_offset] &
+     report->joystick_mouse.button[0].bitmask)) ? 1 : 0;
   if(sel_btn && !state->last_select)
     menu_notify(osd_is_visible() ? MENU_EVENT_HIDE : MENU_EVENT_SHOW);
   state->last_select = sel_btn;
@@ -351,8 +302,8 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
     if(newly_pressed & 0x04) menu_notify(MENU_EVENT_DOWN);
     if(newly_pressed & 0x02) menu_notify(MENU_EVENT_LEFT);
     if(newly_pressed & 0x01) menu_notify(MENU_EVENT_RIGHT);
-    if(newly_pressed & (0x40|0x10)) menu_notify(MENU_EVENT_SELECT); // Cross(PS)/A(Xbox)
-    if(newly_pressed & 0x20) menu_notify(MENU_EVENT_HIDE);   // Circle(PS)/B(Xbox)
+    if(newly_pressed & 0x40) menu_notify(MENU_EVENT_SELECT); // Cross
+    if(newly_pressed & 0x20) menu_notify(MENU_EVENT_HIDE);   // Circle
     state->last_state = joy;
     state->last_state_x = ax;
     state->last_state_y = ay;
