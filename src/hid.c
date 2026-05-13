@@ -368,7 +368,7 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
     state->last_state_x = ax;
     state->last_state_y = ay;
     state->last_state_btn_extra = btn_extra;
-    usb_debugf("JOY%d: D %02x A0 %02x A1 %02x B %02x", state->js_index, joy, ax, ay, btn_extra);
+    // usb_debugf("JOY%d: D %02x A0 %02x A1 %02x B %02x", state->js_index, joy, ax, ay, btn_extra);
 
     mcu_hw_spi_begin();
     mcu_hw_spi_tx_u08(SPI_TARGET_HID);
