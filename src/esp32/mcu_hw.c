@@ -19,6 +19,9 @@
 
 #include "../sysctrl.h"
 
+#include "esp_system.h"
+#include "esp_log.h"
+
 #include "wifi_log.h"
 #include "bt_hid.h"
 
@@ -479,8 +482,8 @@ void mcu_hw_spi_init(void) {
       .host_id = SPI_HOST_ID,
       .cs_id = 0,
       .cs_io_num = PIN_NUM_FLASH_CS,
-      .io_mode = SPI_FLASH_FASTRD,  // Changed from SLOWRD - should be much faster
-      .freq_mhz = 40  // Increased from 20 MHz - most SPI flash supports 40-80 MHz
+      .io_mode = SPI_FLASH_FASTRD,  // Use FASTRD for high-speed operation
+      .freq_mhz = 40  // 40 MHz for fast OTA updates
   };
 
   ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &device_config));
@@ -570,11 +573,32 @@ void mcu_hw_reset(void) {
 }
 
 void mcu_hw_init(void) {
+  /* Capture reset reason early so we can diagnose unexpected reboots */
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+
   // gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
   // gpio_set_pull_mode(PIN_NUM_RECONFIG_N, GPIO_PULLUP_ONLY);
   // gpio_set_level(PIN_NUM_RECONFIG_N, 1);
   wifi_log_early_init();
 
+  const char *rr_str = "?";
+  switch (reset_reason) {
+    case ESP_RST_POWERON:    rr_str = "POWERON"; break;
+    case ESP_RST_EXT:        rr_str = "EXT"; break;
+    case ESP_RST_SW:         rr_str = "SW (esp_restart)"; break;
+    case ESP_RST_PANIC:      rr_str = "PANIC"; break;
+    case ESP_RST_INT_WDT:    rr_str = "INT_WDT"; break;
+    case ESP_RST_TASK_WDT:   rr_str = "TASK_WDT"; break;
+    case ESP_RST_WDT:        rr_str = "WDT (other)"; break;
+    case ESP_RST_DEEPSLEEP:  rr_str = "DEEPSLEEP"; break;
+    case ESP_RST_BROWNOUT:   rr_str = "BROWNOUT"; break;
+    case ESP_RST_SDIO:       rr_str = "SDIO"; break;
+    case ESP_RST_USB:        rr_str = "USB"; break;
+    case ESP_RST_JTAG:       rr_str = "JTAG"; break;
+    default: break;
+  }
+  ESP_LOGW("BOOT", "reset_reason=%d (%s)", (int)reset_reason, rr_str);
+  printf("\r\n[BOOT] reset_reason=%d (%s)\r\n", (int)reset_reason, rr_str);
   vTaskDelay(pdMS_TO_TICKS(5000));
 
   printf("\r\n\r\n" LOGO "           FPGA Companion for ESP32-S2/S3\r\n\r\n");

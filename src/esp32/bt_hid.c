@@ -37,6 +37,14 @@
 /* Re-scan interval when slots are available (milliseconds) */
 #define BT_RESCAN_MS         10000
 
+/* Set to true to pause BLE scanning (e.g. during WiFi-intensive JTAG transfers) */
+static volatile bool s_scan_paused = false;
+
+void bt_hid_set_scan_paused(bool pause)
+{
+    s_scan_paused = pause;
+}
+
 /* -------------------------------------------------------------------------
  * Device table — mirrors the USB hid_device[] table in mcu_hw.c
  * ------------------------------------------------------------------------- */
@@ -214,6 +222,10 @@ static void bt_hid_scan_task(void *arg)
             if (bt_dev[i].dev == NULL) free_slots++;
 
         if (free_slots > 0) {
+            if (s_scan_paused) {
+                vTaskDelay(pdMS_TO_TICKS(BT_RESCAN_MS));
+                continue;
+            }
             ESP_LOGI(TAG, "Scanning for BLE HID devices (%ds)...",
                      BT_SCAN_DURATION_S);
 

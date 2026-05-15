@@ -20,6 +20,7 @@ idf_component_register(SRCS
 	"../mcu_hw.c"
 	"../wifi_log.c"
 	"../ota_server.c"
+	"../jtag_gowin.c"
 	"../bt_hid.c"
 	"../esp_hid_gap.c"
 	${U8G2_SRC}	

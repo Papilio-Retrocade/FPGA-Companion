@@ -19,6 +19,12 @@
 
 unsigned char core_id = 0;
 
+static bool s_suppress_reset = false;
+
+void sys_set_suppress_reset(bool suppress) {
+  s_suppress_reset = suppress;
+}
+
 static const char *core_names[] = {
   "<unset>", "Atari ST", "C64", "VIC", "Amiga", "Atari 2600"
 };
@@ -113,7 +119,12 @@ static void sys_handle_event(void) {
   // FPGA has be reloaded while the MCU was running. Reset
   // the MCU to re-initialize everything and get into a
   // sane state
-  
+
+  if(s_suppress_reset) {
+    sys_debugf("FPGA cold boot detected, but reset suppressed (JTAG SRAM mode)");
+    return;
+  }
+
   sys_debugf("FPGA cold boot detected, reseting MCU ...");
   mcu_hw_reset();
 }
