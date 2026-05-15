@@ -32,6 +32,13 @@ unsigned char sys_irq_ctrl(unsigned char);
 void sys_handle_interrupts(unsigned char);
 bool sys_wait4fpga(void);
 
+// Suppress the MCU auto-reset that normally fires when the FPGA reports a
+// cold-boot event. Used when we deliberately reload the FPGA via JTAG SRAM
+// programming with a bitstream that may not implement the MiSTeryNano SPI
+// protocol — in that case the "cold boot" detection reads garbage and would
+// otherwise reboot the MCU and reload the SPI-flash bootloader bitstream.
+void sys_set_suppress_reset(bool suppress);
+
 void sys_run_action(config_action_t *);
 void sys_run_action_by_name(char *);
 const char *sys_get_config_name(void);

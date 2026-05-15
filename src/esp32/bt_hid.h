@@ -5,6 +5,8 @@
 #ifndef BT_HID_H
 #define BT_HID_H
 
+#include <stdbool.h>
+
 /**
  * @brief Initialise the BLE HID host stack and start background scan task.
  *
@@ -16,5 +18,14 @@
  * into the shared hid_parse() pipeline used by the USB HID path.
  */
 void bt_hid_init(void);
+
+/**
+ * @brief Pause or resume BLE scanning.
+ *
+ * Call with pause=true before starting a long JTAG/WiFi transfer to prevent
+ * BLE scanning from starving the WiFi radio and resetting TCP connections.
+ * Call with pause=false when the transfer is complete.
+ */
+void bt_hid_set_scan_paused(bool pause);
 
 #endif /* BT_HID_H */

@@ -21,6 +21,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -33,14 +34,89 @@
 #include "ota_server.h"
 #include "../mcu_hw.h"
 #include "jtag_gowin.h"
+#include "bt_hid.h"
+#include "../sysctrl.h"
 
 static const char *TAG = "ota_server";
+
+/* Mutex to prevent concurrent JTAG programming requests */
+static SemaphoreHandle_t s_jtag_mutex = NULL;
 
 /* Receive buffer size (bytes). Larger = faster upload but more heap. */
 #define OTA_RECV_BUF 4096
 #define FPGA_FLASH_BUF 4096
 #define FPGA_FLASH_ADDR 0x100000  /* FPGA bitstream location in SPI flash */
 #define FPGA_FLASH_SIZE 0x200000  /* 2 MB max for FPGA bitstream */
+
+/* JTAG Programming Task - runs in separate task to avoid blocking HTTP server */
+typedef struct {
+    uint8_t *bitstream;
+    size_t length;
+} jtag_program_task_data_t;
+
+static void jtag_program_task(void *arg)
+{
+    jtag_program_task_data_t *data = (jtag_program_task_data_t *)arg;
+    
+    ESP_LOGI(TAG, "JTAG programming task started: %zu bytes", data->length);
+    
+    /* Initialize JTAG */
+    static bool jtag_initialized = false;
+    if (!jtag_initialized) {
+        esp_err_t err = jtag_gowin_init(NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JTAG initialization failed");
+            free(data->bitstream);
+            free(data);
+            vTaskDelete(NULL);
+            return;
+        }
+        jtag_initialized = true;
+    }
+    
+    /* Begin streaming SRAM programming */
+    uint32_t idcode;
+    esp_err_t err = jtag_gowin_program_sram_begin(&idcode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to begin JTAG programming");
+        free(data->bitstream);
+        free(data);
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    /* Program in chunks */
+    size_t chunk_size = 4096;
+    for (size_t offset = 0; offset < data->length; offset += chunk_size) {
+        size_t remaining = data->length - offset;
+        size_t to_write = (remaining < chunk_size) ? remaining : chunk_size;
+        
+        err = jtag_gowin_program_sram_write(data->bitstream + offset, to_write);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JTAG write failed at offset %zu", offset);
+            free(data->bitstream);
+            free(data);
+            vTaskDelete(NULL);
+            return;
+        }
+        
+        if ((offset % 65536) == 0) {
+            ESP_LOGI(TAG, "Programmed: %zu / %zu bytes", offset + to_write, data->length);
+        }
+    }
+    
+    /* Complete programming */
+    err = jtag_gowin_program_sram_end();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "JTAG programming end failed");
+    } else {
+        ESP_LOGI(TAG, "JTAG programming completed successfully");
+    }
+    
+    free(data->bitstream);
+    free(data);
+    vTaskDelete(NULL);
+}
 
 /* =========================================================================
  * GET / — status page
@@ -195,8 +271,6 @@ static esp_err_t handle_update(httpd_req_t *req)
 
 static esp_err_t handle_fpga_update(httpd_req_t *req)
 {
-    esp_err_t err;
-
     if (req->content_len == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
@@ -222,14 +296,12 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Hold FPGA in reset during programming to ensure SPI pins are connected
-     * and prevent flash access conflicts */
-    ESP_LOGI(TAG, "Holding FPGA in reset for programming");
-    gpio_set_direction(13, GPIO_MODE_OUTPUT);  // PIN_NUM_RECONFIG_N
-    gpio_set_level(13, 0);  // Hold in reset
-    vTaskDelay(pdMS_TO_TICKS(100));  // Let FPGA stabilize
-
+    /* NOTE: FPGA must NOT be held in reset during programming!
+     * The FPGA needs to be running for the ESP32 to access the shared SPI flash.
+     * When FPGA is in reset, SPI pins are disconnected from ESP32. */
+    
     /* Acquire SPI flash semaphore for exclusive access */
+    ESP_LOGI(TAG, "Acquiring SPI flash for programming");
     mcu_hw_spi_flash_begin();
     time_reset = esp_timer_get_time();
 
@@ -260,8 +332,6 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
             ESP_LOGE(TAG, "Receive error (%d)", recv);
             free(buf);
             mcu_hw_spi_flash_end();
-            gpio_set_level(13, 1);
-            gpio_set_direction(13, GPIO_MODE_INPUT);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
@@ -287,6 +357,10 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     free(buf);
     mcu_hw_spi_flash_end();
 
+    /* Let SPI flash settle after intensive write operations */
+    ESP_LOGI(TAG, "Flash write complete, waiting for flash to settle");
+    vTaskDelay(pdMS_TO_TICKS(500));  // 500ms delay for flash to settle
+
     int64_t time_total = time_write - time_start;
     
     ESP_LOGI(TAG, "FPGA bitstream written successfully (%d bytes)", written);
@@ -299,11 +373,18 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     ESP_LOGI(TAG, "  TOTAL TIME:    %.1f s", time_total / 1000000.0);
     ESP_LOGI(TAG, "  Throughput:    %.1f KB/s", (written / 1024.0) / (time_total / 1000000.0));
     ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "Releasing FPGA from reset - reconfiguration will start");
-
-    /* Release FPGA from reset to trigger reconfiguration */
-    gpio_set_level(13, 1);
-    gpio_set_direction(13, GPIO_MODE_INPUT);
+    
+    /* Trigger FPGA reconfiguration by pulsing reset low then high */
+    ESP_LOGI(TAG, "Triggering FPGA reconfiguration from new bitstream");
+    gpio_set_direction(13, GPIO_MODE_OUTPUT);  // PIN_NUM_RECONFIG_N
+    gpio_set_level(13, 0);  // Assert reset
+    vTaskDelay(pdMS_TO_TICKS(100));  // Hold reset for 100ms
+    gpio_set_level(13, 1);  // Release reset
+    gpio_set_direction(13, GPIO_MODE_INPUT);  // Return to input mode
+    
+    /* Wait for FPGA to reconfigure from flash */
+    ESP_LOGI(TAG, "Waiting for FPGA reconfiguration to complete");
+    vTaskDelay(pdMS_TO_TICKS(1000));  // 1 second for FPGA reconfiguration
 
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "FPGA update successful! FPGA reconfiguring from new bitstream...\r\n");
@@ -325,8 +406,13 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    /* Reject concurrent programming requests */
+    if (xSemaphoreTake(s_jtag_mutex, 0) != pdTRUE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JTAG programming already in progress");
+        return ESP_FAIL;
+    }
+
     ESP_LOGI(TAG, "FPGA JTAG SRAM programming started: %d bytes", req->content_len);
-    int64_t time_start = esp_timer_get_time();
 
     /* Initialize JTAG (if not already initialized) */
     static bool jtag_initialized = false;
@@ -334,17 +420,23 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
         err = jtag_gowin_init(NULL);  /* Use default pins */
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "JTAG initialization failed");
+            xSemaphoreGive(s_jtag_mutex);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JTAG init failed");
             return ESP_FAIL;
         }
         jtag_initialized = true;
     }
 
+    /* Pause BLE scanning for the duration — BLE and WiFi share the radio on
+     * ESP32-S3; a 5-second scan starves WiFi and resets the TCP connection. */
+    bt_hid_set_scan_paused(true);
+
     /* Begin streaming SRAM programming */
     uint32_t idcode;
     err = jtag_gowin_program_sram_begin(&idcode);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to begin JTAG programming");
+        xSemaphoreGive(s_jtag_mutex);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, 
                            "FPGA not detected via JTAG");
         return ESP_FAIL;
@@ -353,11 +445,12 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
     /* Allocate chunk buffer (4KB - much smaller than full bitstream) */
     char *chunk_buf = malloc(OTA_RECV_BUF);
     if (!chunk_buf) {
+        xSemaphoreGive(s_jtag_mutex);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
 
-    /* Stream bitstream in chunks */
+    /* Stream bitstream in chunks directly to JTAG */
     int remaining = req->content_len;
     int received  = 0;
     bool error = false;
@@ -373,11 +466,12 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
         if (recv <= 0) {
             ESP_LOGE(TAG, "Receive error (%d)", recv);
             free(chunk_buf);
+            xSemaphoreGive(s_jtag_mutex);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
         
-        /* Write chunk to FPGA via JTAG */
+        /* Write chunk to FPGA via JTAG immediately */
         err = jtag_gowin_program_sram_write((uint8_t*)chunk_buf, recv);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "JTAG write failed");
@@ -387,15 +481,24 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
         
         remaining -= recv;
         received  += recv;
-        
-        if (received % 65536 == 0) {
+
+        /* Progress log every ~128KB (using last-logged threshold to handle
+         * non-power-of-2 chunk totals). */
+        static int last_logged = 0;
+        if (received - last_logged >= 131072 || remaining == 0) {
             ESP_LOGI(TAG, "Programmed: %d / %d bytes", received, req->content_len);
+            last_logged = received;
+        }
+        if (remaining == 0) {
+            last_logged = 0;  /* reset for next transfer */
         }
     }
 
     free(chunk_buf);
 
     if (error) {
+        bt_hid_set_scan_paused(false);
+        xSemaphoreGive(s_jtag_mutex);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Programming failed");
         return ESP_FAIL;
     }
@@ -404,20 +507,23 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
     err = jtag_gowin_program_sram_end();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "JTAG programming end failed");
+        bt_hid_set_scan_paused(false);
+        xSemaphoreGive(s_jtag_mutex);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Programming failed");
         return ESP_FAIL;
     }
 
-    int64_t time_total = esp_timer_get_time() - time_start;
-    ESP_LOGI(TAG, "=== FPGA JTAG SRAM Programming Complete ===");
-    ESP_LOGI(TAG, "  Total time: %.1f s", time_total / 1000000.0);
-    ESP_LOGI(TAG, "  Device:     %s (IDCODE 0x%08lX)", 
-             jtag_gowin_device_name(idcode), idcode);
-    ESP_LOGI(TAG, "===========================================");
+    ESP_LOGI(TAG, "FPGA JTAG SRAM programming complete!");
+    /* The newly loaded bitstream may not implement the MiSTeryNano SPI
+     * protocol. Suppress the FPGA-cold-boot auto-reset so the SRAM design
+     * stays running instead of being clobbered by an MCU reboot that would
+     * trigger the FPGA to reload its SPI-flash bootloader bitstream. */
+    sys_set_suppress_reset(true);
+    bt_hid_set_scan_paused(false);
+    xSemaphoreGive(s_jtag_mutex);
 
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "FPGA SRAM programmed successfully via JTAG!\r\n"
-                            "Configuration is volatile - will be lost on power cycle.\r\n");
+    httpd_resp_sendstr(req, "FPGA programmed successfully via JTAG!\n");
 
     return ESP_OK;
 }
@@ -428,10 +534,16 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
 
 void ota_server_start(void)
 {
+    if (s_jtag_mutex == NULL) {
+        s_jtag_mutex = xSemaphoreCreateMutex();
+    }
+
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_OTA_PORT;
     cfg.max_uri_handlers = 4;  /* status, ESP32 update, FPGA flash update, FPGA JTAG update */
     cfg.stack_size       = 8192;
+    cfg.recv_wait_timeout = 600;  /* 10 minutes - for large JTAG bitstreams */
+    cfg.send_wait_timeout = 600;  /* 10 minutes */
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {

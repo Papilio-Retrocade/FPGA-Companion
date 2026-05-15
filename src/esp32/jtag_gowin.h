@@ -47,7 +47,7 @@ typedef struct {
 /* Gowin Device IDs                                                          */
 /* ========================================================================= */
 
-#define GOWIN_IDCODE_GW2A_18    0x0900281B  /* GW2A-LV18PG256C8/I7 */
+#define GOWIN_IDCODE_GW2A_18    0x0000081B  /* GW2A(R)-18(C) — matches openFPGALoader */
 #define GOWIN_IDCODE_GW2AR_18   0x0100481B  /* GW2AR-LV18QN88C8/I7 */
 #define GOWIN_IDCODE_GW1N_1     0x0900181B  /* GW1N-LV1QN48C6/I5 */
 #define GOWIN_IDCODE_GW1NR_9    0x0100181B  /* GW1NR-LV9QN88PC6/I5 */
