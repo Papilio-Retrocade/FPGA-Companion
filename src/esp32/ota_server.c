@@ -38,6 +38,7 @@
 #include "../mcu_hw.h"
 #include "jtag_gowin.h"
 #include "bt_hid.h"
+#include "wifi_log.h"
 #include "../sysctrl.h"
 #include "bootloader_data.h"
 
@@ -52,7 +53,7 @@ static bool s_jtag_initialized = false;
 /* Receive buffer size (bytes). Larger = faster upload but more heap. */
 #define OTA_RECV_BUF 4096
 #define FPGA_FLASH_BUF 4096
-#define FPGA_FLASH_ADDR 0x100000  /* FPGA bitstream location in SPI flash */
+#define FPGA_FLASH_ADDR 0x000000  /* FPGA bitstream location in SPI flash */
 #define FPGA_FLASH_SIZE 0x200000  /* 2 MB max for FPGA bitstream */
 
 /* JTAG Programming Task - runs in separate task to avoid blocking HTTP server */
@@ -406,7 +407,7 @@ static esp_err_t load_bootloader_to_sram(void)
 }
 
 /* =========================================================================
- * POST /fpga-update — receive FPGA bitstream, write to flash @ 0x100000
+ * POST /fpga-update — receive FPGA bitstream, write to flash @ 0x000000
  * ========================================================================= */
 
 static esp_err_t handle_fpga_update(httpd_req_t *req)
@@ -426,12 +427,20 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     ESP_LOGI(TAG, "FPGA OTA update started: %d bytes → flash @ 0x%06x",
              req->content_len, FPGA_FLASH_ADDR);
 
+    /* Pause BLE scanning for the duration of the flash operation.
+     * BLE and SPI flash share radio/CPU time; scanning during flash writes
+     * causes SPI timing issues and can corrupt the bitstream. */
+    bt_hid_set_scan_paused(true);
+    wifi_log_led_set(32, 0, 32);  /* purple = OTA in progress */
+
     /* Start timing */
     int64_t time_start = esp_timer_get_time();
     int64_t time_reset, time_erase;
 
     char *buf = malloc(FPGA_FLASH_BUF);
     if (!buf) {
+        bt_hid_set_scan_paused(false);
+        wifi_log_led_set(0, 16, 0);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
@@ -447,6 +456,8 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
         ESP_LOGE(TAG, "Bootloader SRAM load failed (%s) — aborting flash update",
                  esp_err_to_name(bl_err));
         free(buf);
+        bt_hid_set_scan_paused(false);
+        wifi_log_led_set(0, 16, 0);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Failed to load bootloader to FPGA SRAM");
         return ESP_FAIL;
@@ -470,6 +481,8 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     if (flash_init_err != ESP_OK) {
         ESP_LOGE(TAG, "SPI flash init failed after bootloader load: %s", esp_err_to_name(flash_init_err));
         mcu_hw_spi_flash_end();
+        bt_hid_set_scan_paused(false);
+        wifi_log_led_set(0, 16, 0);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "SPI flash not accessible after SRAM bootloader load");
         sys_set_suppress_reset(false);
@@ -509,6 +522,8 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
             free(buf);
             mcu_hw_spi_flash_end();
             sys_set_suppress_reset(false);
+            bt_hid_set_scan_paused(false);
+            wifi_log_led_set(0, 16, 0);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
@@ -556,16 +571,17 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
      * event fires immediately when RECONFIG_N goes low — if suppress is already
      * cleared the ESP32 will reboot itself before the HTTP response is sent.
      * We clear suppress_reset after a delay long enough for the FPGA to finish
-     * its boot sequence (bootloader @ 0x000000 → ~2s timeout → user bitstream
-     * @ 0x100000). */
+     * booting directly from the new bitstream @ 0x000000. */
     ESP_LOGI(TAG, "Triggering FPGA reconfiguration via RECONFIG_N");
+    bt_hid_set_scan_paused(false);
+    wifi_log_led_set(0, 16, 0);
     mcu_hw_fpga_reset();
 
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "FPGA update successful! FPGA reconfiguring from new bitstream...\r\n");
 
     ESP_LOGI(TAG, "FPGA OTA update complete — waiting for FPGA boot sequence to finish");
-    vTaskDelay(pdMS_TO_TICKS(4000));   /* bootloader (~2s) + multiboot + margin */
+    vTaskDelay(pdMS_TO_TICKS(2000));   /* margin for FPGA to boot directly from 0x000000 */
     sys_set_suppress_reset(false);
     ESP_LOGI(TAG, "Reset suppression cleared — FPGA should be running new bitstream");
 

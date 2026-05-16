@@ -5,6 +5,10 @@
 
 #include "../mcu_hw.h"
 
+#ifdef ESP_PLATFORM
+#include "wifi_log.h"
+#endif
+
 #include "../config.h"
 #include "../sysctrl.h"
 #include "../sdc.h"
@@ -75,6 +79,10 @@ static void com_task(__attribute__((unused)) void *p ) {
   }
 
   debugf("Entering main loop");
+
+#ifdef ESP_PLATFORM
+  wifi_log_main_loop_reached();
+#endif
   
   for(;;) {
     mcu_hw_irq_ack();  // re-enable interrupt
