@@ -18,6 +18,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -31,16 +32,22 @@
 #include "esp_timer.h"
 #include "driver/gpio.h"
 
+#include "miniz.h"
+
 #include "ota_server.h"
 #include "../mcu_hw.h"
 #include "jtag_gowin.h"
 #include "bt_hid.h"
 #include "../sysctrl.h"
+#include "bootloader_data.h"
 
 static const char *TAG = "ota_server";
 
 /* Mutex to prevent concurrent JTAG programming requests */
 static SemaphoreHandle_t s_jtag_mutex = NULL;
+
+/* Shared JTAG initialisation flag (once per boot) */
+static bool s_jtag_initialized = false;
 
 /* Receive buffer size (bytes). Larger = faster upload but more heap. */
 #define OTA_RECV_BUF 4096
@@ -61,8 +68,7 @@ static void jtag_program_task(void *arg)
     ESP_LOGI(TAG, "JTAG programming task started: %zu bytes", data->length);
     
     /* Initialize JTAG */
-    static bool jtag_initialized = false;
-    if (!jtag_initialized) {
+    if (!s_jtag_initialized) {
         esp_err_t err = jtag_gowin_init(NULL);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "JTAG initialization failed");
@@ -71,7 +77,7 @@ static void jtag_program_task(void *arg)
             vTaskDelete(NULL);
             return;
         }
-        jtag_initialized = true;
+        s_jtag_initialized = true;
     }
     
     /* Begin streaming SRAM programming */
@@ -141,6 +147,7 @@ static esp_err_t handle_status(httpd_req_t *req)
         "\r\n"
         "  FPGA bitstream to flash (persistent, slower):\r\n"
         "    curl -X POST http://<device-ip>:%d/fpga-update --data-binary @bitstream.bin\r\n"
+        "    NOTE: embedded bootloader is auto-loaded to FPGA SRAM via JTAG first.\r\n"
         "\r\n"
         "  FPGA bitstream to SRAM via JTAG (volatile, fast, no flash wear):\r\n"
         "    curl -X POST http://<device-ip>:%d/fpga-jtag-sram --data-binary @bitstream.fs\r\n",
@@ -266,6 +273,139 @@ static esp_err_t handle_update(httpd_req_t *req)
 }
 
 /* =========================================================================
+ * load_bootloader_to_sram — decompress and stream embedded bootloader to FPGA
+ *
+ * Called automatically by handle_fpga_update before writing to SPI flash.
+ * This guarantees the FPGA is running a known-good bitstream (the bootloader)
+ * that bridges the SPI flash pins to the ESP32, even when the flash is blank
+ * or holds a corrupt/incompatible bitstream.
+ *
+ * Memory: uses only a 32 KB ring-buffer for decompression — no large malloc.
+ * The compressed bitstream lives in ESP32 flash (const, zero RAM overhead).
+ * ========================================================================= */
+
+static esp_err_t load_bootloader_to_sram(void)
+{
+    if (xSemaphoreTake(s_jtag_mutex, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timeout acquiring JTAG mutex for bootloader load");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    bt_hid_set_scan_paused(true);
+
+    if (!s_jtag_initialized) {
+        esp_err_t err = jtag_gowin_init(NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "JTAG init failed: %s", esp_err_to_name(err));
+            bt_hid_set_scan_paused(false);
+            xSemaphoreGive(s_jtag_mutex);
+            return err;
+        }
+        s_jtag_initialized = true;
+    }
+
+    ESP_LOGI(TAG, "Loading embedded bootloader (%u B compressed) to FPGA SRAM",
+             BOOTLOADER_COMPRESSED_SIZE);
+
+    uint32_t  idcode;
+    esp_err_t err = jtag_gowin_program_sram_begin(&idcode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "JTAG sram_begin failed: %s", esp_err_to_name(err));
+        bt_hid_set_scan_paused(false);
+        xSemaphoreGive(s_jtag_mutex);
+        return err;
+    }
+
+    /* 32 KB ring buffer — matches DEFLATE's maximum look-back window.
+     * Use tinfl ring-buffer mode (flags=0, NOT TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF).
+     * pOut_buf_start always points to ring start; tinfl resolves back-references
+     * using m_dist_from_out_buf_start, which wraps correctly within DICT_SIZE. */
+    const size_t DICT_SIZE = 32768;
+    uint8_t *ring = malloc(DICT_SIZE);
+    if (!ring) {
+        ESP_LOGE(TAG, "OOM: cannot allocate 32 KB ring buffer");
+        jtag_gowin_program_sram_end();
+        bt_hid_set_scan_paused(false);
+        xSemaphoreGive(s_jtag_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    tinfl_decompressor *decomp = malloc(sizeof(tinfl_decompressor));
+    if (!decomp) {
+        ESP_LOGE(TAG, "OOM: cannot allocate tinfl_decompressor (%zu bytes)",
+                 sizeof(tinfl_decompressor));
+        free(ring);
+        jtag_gowin_program_sram_end();
+        bt_hid_set_scan_paused(false);
+        xSemaphoreGive(s_jtag_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    tinfl_init(decomp);
+
+    const uint8_t *src      = bootloader_compressed_data;
+    size_t         src_left = BOOTLOADER_COMPRESSED_SIZE;
+    size_t         ring_pos = 0;   /* write position within ring */
+    size_t         total_out = 0;
+    esp_err_t      write_err = ESP_OK;
+
+    for (;;) {
+        size_t in_bytes  = src_left;
+        size_t out_bytes = DICT_SIZE - ring_pos;  /* space to end of ring */
+
+        /* flags=0: ring-buffer mode — tinfl resolves back-references within
+         * the 32 KB ring using pOut_buf_start as the base. */
+        tinfl_status status = tinfl_decompress(
+            decomp,
+            src, &in_bytes,
+            ring,              /* pOut_buf_start — ring base for back-refs */
+            ring + ring_pos,   /* pOut_buf_next  — current write position  */
+            &out_bytes,
+            0);                /* flags=0: ring-buffer mode                */
+
+        src      += in_bytes;
+        src_left -= in_bytes;
+
+        if (out_bytes > 0 && write_err == ESP_OK) {
+            write_err  = jtag_gowin_program_sram_write(ring + ring_pos, out_bytes);
+            total_out += out_bytes;
+            ring_pos   = (ring_pos + out_bytes) % DICT_SIZE;
+        }
+
+        if (status == TINFL_STATUS_DONE) break;
+
+        if (status < TINFL_STATUS_DONE) {
+            ESP_LOGE(TAG, "Decompression error: %d", (int)status);
+            if (write_err == ESP_OK) write_err = ESP_FAIL;
+            break;
+        }
+
+        if (in_bytes == 0 && out_bytes == 0) {
+            ESP_LOGE(TAG, "Decompressor stalled — corrupt data?");
+            if (write_err == ESP_OK) write_err = ESP_FAIL;
+            break;
+        }
+    }
+
+    free(ring);
+    free(decomp);
+
+    esp_err_t end_err = jtag_gowin_program_sram_end();
+    if (end_err != ESP_OK) {
+        ESP_LOGE(TAG, "JTAG sram_end failed: %s", esp_err_to_name(end_err));
+        if (write_err == ESP_OK) write_err = end_err;
+    }
+
+    bt_hid_set_scan_paused(false);
+    xSemaphoreGive(s_jtag_mutex);
+
+    if (write_err == ESP_OK)
+        ESP_LOGI(TAG, "Bootloader in FPGA SRAM (%zu bytes).  SPI flash now accessible.",
+                 total_out);
+
+    return write_err;
+}
+
+/* =========================================================================
  * POST /fpga-update — receive FPGA bitstream, write to flash @ 0x100000
  * ========================================================================= */
 
@@ -296,10 +436,46 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* NOTE: FPGA must NOT be held in reset during programming!
-     * The FPGA needs to be running for the ESP32 to access the shared SPI flash.
-     * When FPGA is in reset, SPI pins are disconnected from ESP32. */
-    
+    /* Load the embedded bootloader to FPGA SRAM via JTAG.
+     * This guarantees the FPGA is running (bridging SPI pins to the ESP32)
+     * even when the flash is blank or holds a corrupt bitstream.
+     * If the FPGA was already running a valid bitstream, JTAG programming
+     * simply replaces it with the known-good bootloader. */
+    ESP_LOGI(TAG, "Pre-loading embedded bootloader to FPGA SRAM");
+    esp_err_t bl_err = load_bootloader_to_sram();
+    if (bl_err != ESP_OK) {
+        ESP_LOGE(TAG, "Bootloader SRAM load failed (%s) — aborting flash update",
+                 esp_err_to_name(bl_err));
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Failed to load bootloader to FPGA SRAM");
+        return ESP_FAIL;
+    }
+
+    /* Suppress MCU auto-reset while the bootloader is in SRAM.
+     * The FPGA cold-boot event fired by JTAG programming must not trigger an
+     * MCU reboot that would cause the FPGA to reload from flash mid-write. */
+    sys_set_suppress_reset(true);
+
+    /* Settle time for the FPGA to finish initialising from SRAM.
+     * The simplified bootloader only bridges SPI pins — give it 1s to stabilise
+     * before driving the SPI flash bus. */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    /* Re-initialise the flash driver.  The very first call at boot fails because
+     * the FPGA has no bitstream (SPI pins not bridged).  Now the SRAM bootloader
+     * is running and the SPI bridge is active, so we can probe the chip. */
+    ESP_LOGI(TAG, "Re-initializing SPI flash (FPGA SPI bridge now active)");
+    esp_err_t flash_init_err = mcu_hw_reinit_flash();
+    if (flash_init_err != ESP_OK) {
+        ESP_LOGE(TAG, "SPI flash init failed after bootloader load: %s", esp_err_to_name(flash_init_err));
+        mcu_hw_spi_flash_end();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "SPI flash not accessible after SRAM bootloader load");
+        sys_set_suppress_reset(false);
+        return ESP_FAIL;
+    }
+
     /* Acquire SPI flash semaphore for exclusive access */
     ESP_LOGI(TAG, "Acquiring SPI flash for programming");
     mcu_hw_spi_flash_begin();
@@ -332,6 +508,7 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
             ESP_LOGE(TAG, "Receive error (%d)", recv);
             free(buf);
             mcu_hw_spi_flash_end();
+            sys_set_suppress_reset(false);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
@@ -374,20 +551,23 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
     ESP_LOGI(TAG, "  Throughput:    %.1f KB/s", (written / 1024.0) / (time_total / 1000000.0));
     ESP_LOGI(TAG, "=================================");
     
-    /* Trigger FPGA reconfiguration by pulsing reset low then high */
-    ESP_LOGI(TAG, "Triggering FPGA reconfiguration from new bitstream");
-    gpio_set_direction(13, GPIO_MODE_OUTPUT);  // PIN_NUM_RECONFIG_N
-    gpio_set_level(13, 0);  // Assert reset
-    vTaskDelay(pdMS_TO_TICKS(100));  // Hold reset for 100ms
-    gpio_set_level(13, 1);  // Release reset
-    gpio_set_direction(13, GPIO_MODE_INPUT);  // Return to input mode
-    
-    /* Wait for FPGA to reconfigure from flash */
-    ESP_LOGI(TAG, "Waiting for FPGA reconfiguration to complete");
-    vTaskDelay(pdMS_TO_TICKS(1000));  // 1 second for FPGA reconfiguration
+    /* Trigger FPGA reconfiguration via RECONFIG_N.
+     * IMPORTANT: keep suppress_reset=true during the pulse.  The FPGA cold-boot
+     * event fires immediately when RECONFIG_N goes low — if suppress is already
+     * cleared the ESP32 will reboot itself before the HTTP response is sent.
+     * We clear suppress_reset after a delay long enough for the FPGA to finish
+     * its boot sequence (bootloader @ 0x000000 → ~2s timeout → user bitstream
+     * @ 0x100000). */
+    ESP_LOGI(TAG, "Triggering FPGA reconfiguration via RECONFIG_N");
+    mcu_hw_fpga_reset();
 
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "FPGA update successful! FPGA reconfiguring from new bitstream...\r\n");
+
+    ESP_LOGI(TAG, "FPGA OTA update complete — waiting for FPGA boot sequence to finish");
+    vTaskDelay(pdMS_TO_TICKS(4000));   /* bootloader (~2s) + multiboot + margin */
+    sys_set_suppress_reset(false);
+    ESP_LOGI(TAG, "Reset suppression cleared — FPGA should be running new bitstream");
 
     ESP_LOGI(TAG, "FPGA OTA update complete");
     return ESP_OK;
@@ -415,8 +595,7 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
     ESP_LOGI(TAG, "FPGA JTAG SRAM programming started: %d bytes", req->content_len);
 
     /* Initialize JTAG (if not already initialized) */
-    static bool jtag_initialized = false;
-    if (!jtag_initialized) {
+    if (!s_jtag_initialized) {
         err = jtag_gowin_init(NULL);  /* Use default pins */
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "JTAG initialization failed");
@@ -424,7 +603,7 @@ static esp_err_t handle_fpga_jtag_sram(httpd_req_t *req)
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JTAG init failed");
             return ESP_FAIL;
         }
-        jtag_initialized = true;
+        s_jtag_initialized = true;
     }
 
     /* Pause BLE scanning for the duration — BLE and WiFi share the radio on

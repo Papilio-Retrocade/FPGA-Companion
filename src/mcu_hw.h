@@ -17,12 +17,14 @@ void mcu_hw_main_loop(void);
 void mcu_hw_irq_ack(void);
 void mcu_hw_reset(void);
 #ifdef ESP_PLATFORM
+#include "esp_err.h"
 void mcu_hw_fpga_reset(void);
 void mcu_hw_erase_flash_region(uint32_t addr, uint32_t size);
 void mcu_hw_write_flash(uint32_t addr, uint8_t *data, uint32_t size);
 void mcu_hw_read_flash(uint32_t addr, uint8_t *data, uint32_t size);
 void mcu_hw_spi_flash_begin(void);
 void mcu_hw_spi_flash_end(void);
+esp_err_t mcu_hw_reinit_flash(void);
 #endif
 
 // HW SPI interface
