@@ -21,6 +21,7 @@
 
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 
 #include "wifi_log.h"
 #include "bt_hid.h"
@@ -418,7 +419,7 @@ static const esp_flash_spi_device_config_t flash_device_cfg = {
     .cs_id     = 0,
     .cs_io_num = PIN_NUM_FLASH_CS,
     .io_mode   = SPI_FLASH_SLOWRD,  /* SLOWRD (0x03) avoids dummy-byte issues through FPGA bridge */
-    .freq_mhz  = 10
+    .freq_mhz  = 20
 };
 
 extern TaskHandle_t com_task_handle;
@@ -460,7 +461,7 @@ void mcu_hw_spi_init(void) {
   spi_bus_initialize(SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO);
 
   spi_device_interface_config_t devcfg = {
-     .clock_speed_hz = 20 * 1000 * 1000,      // 20 MHz
+     .clock_speed_hz = 10 * 1000 * 1000,      // 10 MHz (reduced for SPI timing diagnostics)
      .mode = 1,                               // SPI mode 1
      .spics_io_num = -1,
      .command_bits = 0,                       // no command, address or dummy bits since we
@@ -635,6 +636,20 @@ void mcu_hw_fpga_reset(void) {
   gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
   gpio_set_level(PIN_NUM_RECONFIG_N, 0);
   vTaskDelay(pdMS_TO_TICKS(100));
+  gpio_set_level(PIN_NUM_RECONFIG_N, 1);
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_INPUT);
+}
+
+/* Brief pulse used to race JTAG into config mode before the FPGA's auto-load
+ * from SPI flash completes.  No post-pulse delay — the caller is expected to
+ * immediately drive JTAG.  ~5 ms low is enough for the GW2A config FSM to
+ * abort an in-progress flash load and tri-state user I/O cells; after the
+ * pin returns high, JTAG CONFIG_ENABLE will be latched before the next flash
+ * auto-load attempt begins. */
+void mcu_hw_fpga_reset_brief(void) {
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
+  gpio_set_level(PIN_NUM_RECONFIG_N, 0);
+  esp_rom_delay_us(5000);
   gpio_set_level(PIN_NUM_RECONFIG_N, 1);
   gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_INPUT);
 }

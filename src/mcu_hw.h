@@ -19,6 +19,11 @@ void mcu_hw_reset(void);
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
 void mcu_hw_fpga_reset(void);
+/* Brief RECONFIG_N pulse for JTAG recovery (~5 ms low, no post-delay).
+ * Caller can race a JTAG CONFIG_ENABLE instruction in before the FPGA's
+ * configuration FSM finishes auto-loading a (possibly corrupt) bitstream
+ * from SPI flash. */
+void mcu_hw_fpga_reset_brief(void);
 void mcu_hw_erase_flash_region(uint32_t addr, uint32_t size);
 void mcu_hw_write_flash(uint32_t addr, uint8_t *data, uint32_t size);
 void mcu_hw_read_flash(uint32_t addr, uint8_t *data, uint32_t size);

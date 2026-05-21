@@ -21,6 +21,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "esp_err.h"
 #include "driver/gpio.h"
 
@@ -138,7 +139,7 @@ esp_err_t jtag_gowin_program_sram_begin(uint32_t *idcode_out);
  * @param length  Chunk length in bytes
  * @return ESP_OK on success
  */
-esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length);
+esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length, bool yield_for_tcp);
 
 /**
  * Complete streaming SRAM programming
