@@ -40,7 +40,7 @@ uint8_t core_map_key(uint8_t code) {
   if(core_id == CORE_ID_ATARI_ST)
     return core_atarist_keymap[code];
   if(core_id == CORE_ID_C64)
-    return core_c64_keymap[code];
+    return code;  // fpga64_keyboard.vhd decodes raw HID codes directly
   if(core_id == CORE_ID_VIC20)
     return core_vic20_keymap[code];
   if(core_id == CORE_ID_AMIGA)

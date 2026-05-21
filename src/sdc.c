@@ -258,6 +258,7 @@ static int fs_init() {
 // keep track of working directory for each drive
 static char *cwd[MAX_DRIVES];
 static char *image_name[MAX_DRIVES];
+static int lba_offset[MAX_DRIVES];  // sectors to skip at start of file (copier header)
 
 void sdc_set_default(int drive, const char *name) {
   sdc_debugf("set default %d: %s", drive, name);
@@ -325,20 +326,23 @@ int sdc_handle_event(void) {
       // no file selected
       // this should actually never happen as the core won't request
       // data if it hasn't been told that an image is inserted
+      sdc_debugf("event drive %d but no file open (req=%02x)", drive, request);
       return -1;
     }
     
     // ---- figure out which physical sector to use ----
   
     // translate sector into a cluster number inside image
+    // add lba_offset to skip any copier header (e.g. 512-byte SMC/SMD header)
+    unsigned long esector = rsector + lba_offset[drive];
     sdc_lock();
 #ifdef USE_FSEEK
-    f_lseek(&fil[drive], (rsector+1)*512);
+    f_lseek(&fil[drive], (esector+1)*512);
     // and add sector offset within cluster    
-    unsigned long dsector = clst2sect(fil[drive].clust) + rsector%fs.csize;    
+    unsigned long dsector = clst2sect(fil[drive].clust) + esector%fs.csize;    
 #else
     // derive cluster directly from table
-    unsigned long dsector = clst2sect(clmt_clust(&fil[drive], rsector*512)) + rsector%fs.csize;
+    unsigned long dsector = clst2sect(clmt_clust(&fil[drive], esector*512)) + esector%fs.csize;
 #endif
     
     sdc_debugf("drive %d lba %lu = %lu", drive, rsector, dsector);
@@ -471,8 +475,8 @@ int sdc_image_open(int drive, char *name) {
     image_name[drive] = NULL;
   }
   
-  // nothing to be inserted? Do nothing!
-  if(!name) return 0;
+  // nothing to be inserted? Reset offset and do nothing!
+  if(!name) { lba_offset[drive] = 0; return 0; }
 
   // assemble full name incl. path
   char fname[strlen(cwd[drive]) + strlen(name) + 2];
@@ -543,8 +547,18 @@ int sdc_image_open(int drive, char *name) {
   while(*ext != '.' && ext != name) ext--;  // skip to last '.' (or begin)
   if(*ext == '.') ext++;                    // ext starts after '.'
   
+  // detect 512-byte copier header (SMC, SMD): file_size % 1024 == 512
+  unsigned long obj_size = fil[drive].obj.objsize;
+  if (obj_size % 1024 == 512) {
+    sdc_debugf("drive %d: stripping 512-byte copier header", drive);
+    lba_offset[drive] = 1;
+    obj_size -= 512;
+  } else {
+    lba_offset[drive] = 0;
+  }
+
   // image has successfully been opened, so report image size to core
-  sdc_image_inserted(drive, fil[drive].obj.objsize, ext);
+  sdc_image_inserted(drive, obj_size, ext);
   
   return 0;
 }
@@ -694,6 +708,7 @@ int sdc_init(void) {
     for(int d=0;d<MAX_DRIVES;d++) {
       cwd[d] = strdup(CARD_MOUNTPOINT);
       image_name[d] = NULL;
+      lba_offset[d] = 0;
     }
     sdc_debugf("SD card is ready");
   }

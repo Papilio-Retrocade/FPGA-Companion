@@ -76,6 +76,11 @@ static void com_task(__attribute__((unused)) void *p ) {
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file
     sdc_mount_defaults();
+
+    // cold reset so the C64 boots with default images (especially CRT) already loaded.
+    // Without this, the CPU starts before the CRT ROM is in SDRAM and ignores it.
+    sys_set_val('R', 3);
+    sys_set_val('R', 0);
   }
 
   debugf("Entering main loop");
