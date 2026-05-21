@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "driver/gpio.h"
+#include "soc/gpio_reg.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -42,6 +43,14 @@ typedef enum {
 static jtag_pins_t g_pins;
 static jtag_state_t g_state = TEST_LOGIC_RESET;
 
+/* Precomputed bitmasks for direct register access — set once in jtag_gowin_init().
+ * REG_WRITE to GPIO_OUT_W1TS/W1TC is ~3x faster than gpio_set_level() because it
+ * bypasses the function call chain and GPIO matrix lookup. */
+static uint32_t g_tck_mask;
+static uint32_t g_tms_mask;
+static uint32_t g_tdi_mask;
+static uint32_t g_tdo_mask;
+
 /* ========================================================================= */
 /* Low-Level Bit-Bang Functions                                              */
 /* ========================================================================= */
@@ -52,56 +61,41 @@ static jtag_state_t g_state = TEST_LOGIC_RESET;
  * Keep at 0; the bottleneck is now network recv, not JTAG speed. */
 #define TCK_DELAY_US 0
 
-static inline void set_tck(uint8_t val)
-{
-    gpio_set_level(g_pins.tck, val ? 1 : 0);
-    if (TCK_DELAY_US > 0) esp_rom_delay_us(TCK_DELAY_US);
-}
-
-static inline void set_tms(uint8_t val)
-{
-    gpio_set_level(g_pins.tms, val ? 1 : 0);
-}
-
-static inline void set_tdi(uint8_t val)
-{
-    gpio_set_level(g_pins.tdi, val ? 1 : 0);
-}
-
-static inline uint8_t get_tdo(void)
-{
-    return gpio_get_level(g_pins.tdo) ? 1 : 0;
-}
-
 /**
- * Clock one bit through JTAG TAP
- * 
+ * Clock one bit through JTAG TAP using direct register access.
+ *
+ * REG_WRITE to GPIO_OUT_W1TS/W1TC is ~3x faster than gpio_set_level() for
+ * the high-throughput streaming path.  State-machine transitions (IR scan,
+ * state navigation) also use this path; they are few hundred bits total so
+ * speed is irrelevant there, but correctness is paramount.
+ *
+ * Timing note: the ESP32-S3 GPIO matrix adds ~2 APB cycles (~25 ns) of output
+ * latency between a peripheral write and the pin changing.  REG_WRITE itself
+ * takes ~1 APB cycle (~12.5 ns) from the CPU's view.  If we issue W1TS(TDI)
+ * then immediately W1TS(TCK), both signals enter the same pipeline and TDI
+ * settles at the pad only ~8-12 ns before TCK rises — barely above the 3 ns
+ * spec minimum and unreliable with trace capacitance.  The 8-NOP fence below
+ * adds ~33 ns of CPU time, bringing TDI setup to a comfortable ~41 ns.
+ *
  * Standard JTAG timing:
- * - TDI/TMS are sampled by target on rising edge of TCK
- * - TDO is updated by target on falling edge of TCK
- * - Controller samples TDO after falling edge (while TCK is low)
- * 
- * @param tms  TMS value (state control)
- * @param tdi  TDI value (data in)
- * @return TDO value (data out)
+ * - TDI/TMS sampled by target on rising TCK edge
+ * - TDO updated by target on falling TCK edge; sampled after falling edge
  */
-static uint8_t jtag_clock_bit(uint8_t tms, uint8_t tdi)
+static inline __attribute__((always_inline)) uint8_t jtag_clock_bit(uint8_t tms, uint8_t tdi)
 {
-    /* Set TMS and TDI while TCK is low */
-    set_tck(0);
-    set_tms(tms);
-    set_tdi(tdi);
-    
-    /* Rising edge of TCK - target latches TDI/TMS */
-    set_tck(1);
-    
-    /* Falling edge - target updates TDO */
-    set_tck(0);
-    
-    /* Sample TDO after falling edge (while TCK is low) */
-    uint8_t tdo = get_tdo();
-    
-    return tdo;
+    /* Build set/clear masks for TMS and TDI simultaneously */
+    uint32_t set = (tms ? g_tms_mask : 0u) | (tdi ? g_tdi_mask : 0u);
+    uint32_t clr = (tms ? 0u : g_tms_mask) | (tdi ? 0u : g_tdi_mask) | g_tck_mask;
+
+    REG_WRITE(GPIO_OUT_W1TC_REG, clr);          /* clear TCK + any 0-value signals */
+    if (set) REG_WRITE(GPIO_OUT_W1TS_REG, set); /* set any 1-value signals (skip if 0 — W1TS(0) is a peripheral no-op
+                                                  * that provides no settling time against the GPIO output pipeline) */
+    /* 8 NOPs @ 240 MHz ≈ 33 ns — TDI/TMS setup fence before TCK rises */
+    __asm__ volatile("nop; nop; nop; nop; nop; nop; nop; nop");
+    REG_WRITE(GPIO_OUT_W1TS_REG, g_tck_mask);   /* TCK rising edge */
+    REG_WRITE(GPIO_OUT_W1TC_REG, g_tck_mask);   /* TCK falling edge */
+
+    return (REG_READ(GPIO_IN_REG) & g_tdo_mask) ? 1u : 0u;
 }
 
 /* ========================================================================= */
@@ -356,6 +350,12 @@ esp_err_t jtag_gowin_init(const jtag_pins_t *pins)
     
     ESP_LOGI(TAG, "Initializing JTAG: TDI=%d TDO=%d TCK=%d TMS=%d",
              g_pins.tdi, g_pins.tdo, g_pins.tck, g_pins.tms);
+
+    /* Precompute bitmasks for direct GPIO register access in jtag_clock_bit() */
+    g_tck_mask = 1u << (uint32_t)g_pins.tck;
+    g_tms_mask = 1u << (uint32_t)g_pins.tms;
+    g_tdi_mask = 1u << (uint32_t)g_pins.tdi;
+    g_tdo_mask = 1u << (uint32_t)g_pins.tdo;
     
     /* Configure GPIO pins */
     gpio_config_t io_conf = {
@@ -444,7 +444,7 @@ esp_err_t jtag_gowin_program_sram(const uint8_t *bitstream, size_t length)
     uint32_t idcode;
     esp_err_t err = jtag_gowin_program_sram_begin(&idcode);
     if (err != ESP_OK) return err;
-    err = jtag_gowin_program_sram_write(bitstream, length);
+    err = jtag_gowin_program_sram_write(bitstream, length, true);  /* network stream: yield for TCP */
     if (err != ESP_OK) return err;
     return jtag_gowin_program_sram_end();
 }
@@ -538,7 +538,7 @@ esp_err_t jtag_gowin_program_sram_begin(uint32_t *idcode_out)
     return ESP_OK;
 }
 
-esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length)
+esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length, bool yield_for_tcp)
 {
     if (!data || length == 0) return ESP_ERR_INVALID_ARG;
     if (!g_streaming_dr) {
@@ -546,26 +546,39 @@ esp_err_t jtag_gowin_program_sram_write(const uint8_t *data, size_t length)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Clock all bits with TMS=0: stay in Shift-DR the entire time.
-     *
-     * Bit ordering: Gowin .fs/.bin bitstream files store bits MSB-first within
-     * each byte (the FPGA's bitstream parser consumes bit 7 first). JTAG shifts
-     * LSB-first on the wire, so to get the bits onto the wire in the order the
-     * FPGA expects we reverse the bit index — i.e. shift bit 7 of byte N first.
-     * Sending LSB-first instead causes STATUS_BAD_COMMAND (bit 1) because the
-     * FPGA's internal commands are bit-reversed inside each byte. */
-    size_t bits = length * 8;
-    for (size_t i = 0; i < bits; i++) {
-        size_t byte_index = i / 8;
-        uint8_t bit_index = 7 - (i % 8);  /* MSB-first */
-        uint8_t tdi = (data[byte_index] >> bit_index) & 1;
-        jtag_clock_bit(0, tdi);
+    /* Ensure TMS=0 and TCK=0 before streaming.  TMS stays low the entire
+     * transfer; we never touch it inside the bit loop, saving two register
+     * writes per bit compared to the previous clr_base approach. */
+    REG_WRITE(GPIO_OUT_W1TC_REG, g_tck_mask | g_tms_mask);
 
-        /* vTaskDelay(1) every 65536 bits (~64KB): yields to LwIP so it can ACK TCP
-         * data and curl can keep sending. taskYIELD() is insufficient — it only
-         * yields to equal/higher-priority tasks, and LwIP runs lower-priority. */
-        if ((i & 0xFFFF) == 0xFFFF) {
-            vTaskDelay(1);
+    for (size_t b = 0; b < length; b++) {
+        uint8_t byte = data[b];
+        for (int bit = 7; bit >= 0; bit--) {
+            /* Set TDI while TCK is low, then fence with 8 NOPs (~33 ns at
+             * 240 MHz) to ensure the pin has settled through the GPIO matrix
+             * output pipeline before TCK rises.  The old "W1TC confirm 0"
+             * trick was a peripheral no-op that provided no real settling time
+             * because W1TC(0) / W1TS(0) writes are optimised away by the
+             * peripheral and do not stall the output pipeline.  NOPs run on
+             * the CPU itself and guarantee ordered time between TDI change
+             * and TCK rise at ~41 ns — well above the 3 ns GW2A spec. */
+            if ((byte >> bit) & 1u) {
+                REG_WRITE(GPIO_OUT_W1TS_REG, g_tdi_mask);  /* TDI=1 */
+            } else {
+                REG_WRITE(GPIO_OUT_W1TC_REG, g_tdi_mask);  /* TDI=0 */
+            }
+            __asm__ volatile("nop; nop; nop; nop; nop; nop; nop; nop");
+            REG_WRITE(GPIO_OUT_W1TS_REG, g_tck_mask);      /* TCK rising edge */
+            REG_WRITE(GPIO_OUT_W1TC_REG, g_tck_mask);      /* TCK falling edge */
+        }
+
+        /* Yield periodically so other tasks can run.
+         * yield_for_tcp=true: vTaskDelay(1) forces a proper context switch so
+         *   LwIP (lower priority) can ACK TCP segments and keep curl sending.
+         * yield_for_tcp=false: taskYIELD() is enough when data is local (no TCP). */
+        if ((b & 0x1FFF) == 0x1FFF) {
+            if (yield_for_tcp) vTaskDelay(1);
+            else taskYIELD();
         }
     }
 

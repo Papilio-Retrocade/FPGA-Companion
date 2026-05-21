@@ -74,6 +74,11 @@ static RingbufHandle_t    s_ringbuf      = NULL;
 static TaskHandle_t       s_sender_task  = NULL;
 static led_strip_handle_t s_led_strip    = NULL;
 
+/* Blink state — green blink active between WiFi connect and main loop entry */
+static volatile bool      s_blink_active = false;
+static volatile bool      s_blink_on     = false;
+static TimerHandle_t      s_blink_timer  = NULL;
+
 /* ========================================================================= */
 /* LED status helper                                                           */
 /* ========================================================================= */
@@ -95,6 +100,24 @@ static void wifi_led_set(uint8_t r, uint8_t g, uint8_t b) {
     if (!s_led_strip) return;
     led_strip_set_pixel(s_led_strip, 0, r, g, b);
     led_strip_refresh(s_led_strip);
+}
+
+static void blink_timer_cb(TimerHandle_t xTimer) {
+    if (!s_blink_active) return;
+    s_blink_on = !s_blink_on;
+    wifi_led_set(0, s_blink_on ? 16 : 0, 0);  /* blink green */
+}
+
+/* Public: set LED to an explicit colour, stops any blinking. */
+void wifi_log_led_set(uint8_t r, uint8_t g, uint8_t b) {
+    s_blink_active = false;
+    wifi_led_set(r, g, b);
+}
+
+/* Public: called when the main loop is entered — stop blinking, stay green. */
+void wifi_log_main_loop_reached(void) {
+    s_blink_active = false;
+    wifi_led_set(0, 16, 0);
 }
 
 /* ========================================================================= */
@@ -188,6 +211,8 @@ void wifi_log_early_init(void) {
     xTaskCreate(udp_sender_task, "udp_log", 4096, NULL, 5, &s_sender_task);
     wifi_led_init();
     wifi_led_set(0, 0, 8);  /* dim blue = booting / connecting */
+    s_blink_timer = xTimerCreate("led_blink", pdMS_TO_TICKS(300), pdTRUE, NULL, blink_timer_cb);
+    if (s_blink_timer) xTimerStart(s_blink_timer, 0);
 }
 
 void wifi_log_init(void) {
@@ -254,7 +279,8 @@ void wifi_log_init(void) {
     s_dest_addr.sin_port        = htons(WIFI_LOG_UDP_PORT);
     s_dest_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
-    wifi_led_set(0, 16, 0);  /* green = WiFi connected and logging active */
+    wifi_led_set(0, 16, 0);  /* green blink = WiFi connected, waiting for main loop */
+    s_blink_active = true;
 
     /* Sender task drains the pre-WiFi backlog automatically now that
      * s_udp_sock >= 0; give it an immediate nudge. */

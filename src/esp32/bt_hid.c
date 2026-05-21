@@ -37,12 +37,21 @@
 /* Re-scan interval when slots are available (milliseconds) */
 #define BT_RESCAN_MS         10000
 
+#include "esp_gap_ble_api.h"
+
 /* Set to true to pause BLE scanning (e.g. during WiFi-intensive JTAG transfers) */
 static volatile bool s_scan_paused = false;
 
 void bt_hid_set_scan_paused(bool pause)
 {
     s_scan_paused = pause;
+    if (pause) {
+        /* If a scan is currently in flight, cancel it immediately so we
+         * don't have to wait up to BT_SCAN_DURATION_S seconds for it to
+         * finish.  An active BLE scan starves WiFi RX on the shared radio
+         * and causes TCP stalls during the OTA flash write. */
+        esp_ble_gap_stop_scanning();
+    }
 }
 
 /* -------------------------------------------------------------------------

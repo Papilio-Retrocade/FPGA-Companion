@@ -21,6 +21,7 @@
 
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 
 #include "wifi_log.h"
 #include "bt_hid.h"
@@ -410,6 +411,16 @@ static void usb_init(void) {
 // #define PIN_NUM_FLASH_CS   7   // Dock - To select the flash chip
 
 esp_flash_t* ext_flash;
+static bool ext_flash_ready = false;
+
+/* Config used when creating/recreating the flash device handle. */
+static const esp_flash_spi_device_config_t flash_device_cfg = {
+    .host_id   = SPI_HOST_ID,
+    .cs_id     = 0,
+    .cs_io_num = PIN_NUM_FLASH_CS,
+    .io_mode   = SPI_FLASH_SLOWRD,  /* SLOWRD (0x03) avoids dummy-byte issues through FPGA bridge */
+    .freq_mhz  = 20
+};
 
 extern TaskHandle_t com_task_handle;
 static spi_device_handle_t spi;
@@ -450,7 +461,7 @@ void mcu_hw_spi_init(void) {
   spi_bus_initialize(SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO);
 
   spi_device_interface_config_t devcfg = {
-     .clock_speed_hz = 20 * 1000 * 1000,      // 20 MHz
+     .clock_speed_hz = 10 * 1000 * 1000,      // 10 MHz (reduced for SPI timing diagnostics)
      .mode = 1,                               // SPI mode 1
      .spics_io_num = -1,
      .command_bits = 0,                       // no command, address or dummy bits since we
@@ -475,43 +486,106 @@ void mcu_hw_spi_init(void) {
   gpio_isr_handler_add(PIN_NUM_IRQ, irq_handler, NULL);
   gpio_set_intr_type(PIN_NUM_IRQ, GPIO_INTR_LOW_LEVEL);
 
+  /* Register the external SPI flash device on the bus.
+   * We do NOT call esp_flash_init() here — the FPGA SPI bridge is not yet
+   * active at boot time (no valid bitstream in flash until after first OTA).
+   * Actual probing is deferred to mcu_hw_reinit_flash(), called by the OTA
+   * handler after the SRAM bootloader has brought the SPI bridge up. */
+  ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &flash_device_cfg));
+  debugf("External flash device registered (init deferred until FPGA SPI bridge ready)");
+
   sys_wait4fpga();
+}
 
-  // Setup SPI Flash
-  const esp_flash_spi_device_config_t device_config = {
-      .host_id = SPI_HOST_ID,
-      .cs_id = 0,
-      .cs_io_num = PIN_NUM_FLASH_CS,
-      .io_mode = SPI_FLASH_FASTRD,  // Use FASTRD for high-speed operation
-      .freq_mhz = 40  // 40 MHz for fast OTA updates
-  };
+esp_err_t mcu_hw_reinit_flash(void) {
+  /* Probe and initialise the external flash chip.  The FPGA SRAM bootloader
+   * must be running before calling this so that its SPI bridge is active.
+   * Each attempt fully removes and re-adds the flash device to get a clean
+   * handle — field-clearing alone doesn't reset host-side SPI state. */
+  const int MAX_RETRIES = 5;
+  const int RETRY_DELAY_MS[] = { 500, 1000, 1500, 2000, 2000 };
 
-  ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &device_config));
-  
-  // Probe the Flash chip and initialize it
-  esp_err_t err = esp_flash_init(ext_flash);
-  if (err == ESP_OK) {
-      // Print out the ID and size
-      uint32_t id;
-      ESP_ERROR_CHECK(esp_flash_read_id(ext_flash, &id));
-      uint32_t flash_size = 0;
+  ext_flash_ready = false;
+
+  for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    /* Remove the existing device handle to discard all internal state. */
+    spi_bus_remove_flash_device(ext_flash);
+    ext_flash = NULL;
+
+    /* Re-add to get a fresh handle. */
+    esp_err_t add_err = spi_bus_add_flash_device(&ext_flash, &flash_device_cfg);
+    if (add_err != ESP_OK) {
+      debugf("Flash device re-add attempt %d/%d failed: %s",
+             attempt + 1, MAX_RETRIES, esp_err_to_name(add_err));
+      vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS[attempt]));
+      continue;
+    }
+
+    esp_err_t err = esp_flash_init(ext_flash);
+    if (err == ESP_OK) {
+      uint32_t id = 0, flash_size = 0;
+      esp_flash_read_id(ext_flash, &id);
       esp_flash_get_size(ext_flash, &flash_size);
-      debugf("Initialized external Flash, size=%" PRIu32 " KB, ID=0x%" PRIx32, flash_size / 1024, id);
-  } else {
-      debugf("Failed to initialize external Flash: %s (0x%x)", esp_err_to_name(err), err);
+      debugf("External flash ready: size=%" PRIu32 " KB, ID=0x%" PRIx32, flash_size / 1024, id);
+      ext_flash_ready = true;
+      return ESP_OK;
+    }
+
+    debugf("Flash init attempt %d/%d failed: %s — retrying in %d ms",
+           attempt + 1, MAX_RETRIES, esp_err_to_name(err), RETRY_DELAY_MS[attempt]);
+    vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS[attempt]));
   }
 
+  /* Ensure we always have a valid (though uninitialised) handle for safety. */
+  if (!ext_flash) spi_bus_add_flash_device(&ext_flash, &flash_device_cfg);
+  debugf("External flash init failed after %d attempts", MAX_RETRIES);
+  return ESP_ERR_FLASH_UNSUPPORTED_CHIP;
+}
+
+/* Ensure flash is initialized before use.  The FPGA SPI bridge must be active
+ * (i.e. a valid bitstream is running) for this to succeed.  On normal boots the
+ * FPGA loads from flash before the system reaches this point, so a single quick
+ * attempt is sufficient.  The OTA path uses mcu_hw_reinit_flash() instead, which
+ * has full retry logic for the blank-flash first-boot case. */
+static esp_err_t ensure_flash_ready(void) {
+  if (ext_flash_ready) return ESP_OK;
+
+  /* Remove and re-add for a clean handle, then probe. */
+  spi_bus_remove_flash_device(ext_flash);
+  ext_flash = NULL;
+
+  esp_err_t add_err = spi_bus_add_flash_device(&ext_flash, &flash_device_cfg);
+  if (add_err != ESP_OK) {
+    debugf("Flash lazy-init: device re-add failed: %s", esp_err_to_name(add_err));
+    if (!ext_flash) spi_bus_add_flash_device(&ext_flash, &flash_device_cfg);
+    return add_err;
+  }
+
+  esp_err_t err = esp_flash_init(ext_flash);
+  if (err == ESP_OK) {
+    uint32_t id = 0, flash_size = 0;
+    esp_flash_read_id(ext_flash, &id);
+    esp_flash_get_size(ext_flash, &flash_size);
+    debugf("External flash lazy-init: size=%" PRIu32 " KB, ID=0x%" PRIx32, flash_size / 1024, id);
+    ext_flash_ready = true;
+  } else {
+    debugf("Flash lazy-init failed: %s", esp_err_to_name(err));
+  }
+  return err;
 }
 
 void mcu_hw_erase_flash_region(uint32_t addr, uint32_t size) {
+  if (ensure_flash_ready() != ESP_OK) return;
   esp_flash_erase_region(ext_flash, addr, size);
 }
 
 void mcu_hw_write_flash(uint32_t addr, uint8_t *data, uint32_t size) {
+  if (ensure_flash_ready() != ESP_OK) return;
   esp_flash_write(ext_flash, data, addr, size);
 }
 
 void mcu_hw_read_flash(uint32_t addr, uint8_t *data, uint32_t size) {
+  if (ensure_flash_ready() != ESP_OK) return;
   esp_flash_read(ext_flash, data, addr, size);
 }
 
@@ -562,6 +636,20 @@ void mcu_hw_fpga_reset(void) {
   gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
   gpio_set_level(PIN_NUM_RECONFIG_N, 0);
   vTaskDelay(pdMS_TO_TICKS(100));
+  gpio_set_level(PIN_NUM_RECONFIG_N, 1);
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_INPUT);
+}
+
+/* Brief pulse used to race JTAG into config mode before the FPGA's auto-load
+ * from SPI flash completes.  No post-pulse delay — the caller is expected to
+ * immediately drive JTAG.  ~5 ms low is enough for the GW2A config FSM to
+ * abort an in-progress flash load and tri-state user I/O cells; after the
+ * pin returns high, JTAG CONFIG_ENABLE will be latched before the next flash
+ * auto-load attempt begins. */
+void mcu_hw_fpga_reset_brief(void) {
+  gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_OUTPUT);
+  gpio_set_level(PIN_NUM_RECONFIG_N, 0);
+  esp_rom_delay_us(5000);
   gpio_set_level(PIN_NUM_RECONFIG_N, 1);
   gpio_set_direction(PIN_NUM_RECONFIG_N, GPIO_MODE_INPUT);
 }

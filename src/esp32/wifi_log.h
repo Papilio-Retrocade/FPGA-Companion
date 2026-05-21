@@ -44,10 +44,26 @@ void wifi_log_init(void);
  */
 bool wifi_log_is_connected(void);
 
+/**
+ * Set the status LED to an explicit RGB colour, stopping any blink animation.
+ * Use this for temporary status indicators (e.g. purple during OTA).
+ * Restore with wifi_log_main_loop_reached() or another wifi_log_led_set() call.
+ */
+void wifi_log_led_set(uint8_t r, uint8_t g, uint8_t b);
+
+/**
+ * Signal that the main loop has been entered.
+ * Stops the green blink (started at WiFi connect) and holds solid green.
+ * Call once from main.c just before entering the main for(;;) loop.
+ */
+void wifi_log_main_loop_reached(void);
+
 #else
 static inline void wifi_log_early_init(void) {}
 static inline void wifi_log_init(void) {}
 static inline bool wifi_log_is_connected(void) { return false; }
+static inline void wifi_log_led_set(uint8_t r, uint8_t g, uint8_t b) { (void)r; (void)g; (void)b; }
+static inline void wifi_log_main_loop_reached(void) {}
 #endif // CONFIG_WIFI_LOG_ENABLE
 
 #endif // WIFI_LOG_H

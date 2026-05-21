@@ -30,8 +30,8 @@ static const char main_form_c64[] =
 static const char system_form_c64[] =
   "System,0|2;"                         // return to form 0, entry 2
   // --------
-  "L,Joyport 1:,Retro D9|USB #1 Joy|USB #2 Joy|NumPad|DS #1 Joy|Mouse|DS #1 Paddle|USB #1 Padd|USB #2 Padd|Off|DS #2 Joy|DS #2 Paddle,Q;"
-  "L,Joyport 2:,Retro D9|USB #1 Joy|USB #2 Joy|NumPad|DS #1 Joy|Mouse|DS #1 Paddle|USB #1 Padd|USB #2 Padd|Off|DS #2 Joy|DS #2 Paddle,J;"
+  "L,Joyport 1:,Retro D9|Digital #2|USB #1 Joy|USB #2 Joy|DS #1 Joy|DS #2 Joy|NumPad|Mouse|USB #1 Padd|USB #2 Padd|DS #1 Paddle|DS #2 Paddle,Q;"
+  "L,Joyport 2:,Retro D9|Digital #2|USB #1 Joy|USB #2 Joy|DS #1 Joy|DS #2 Joy|NumPad|Mouse|USB #1 Padd|USB #2 Padd|DS #1 Paddle|DS #2 Paddle,J;"
   "L,Swap Joyst:,Off|On,&;"
   "L,REU 1750:,Off|On,V;"
   "L,c1541 ROM:,Dolphin DOS|CBM DOS|Speed DOS P|Jiffy DOS,D;"
@@ -90,8 +90,8 @@ menu_legacy_variable_t core_c64_variables[] = {
   { 'A', { 2 }},    // default volume = 66%
   { 'W', { 0 }},    // default normal (4:3) screen
   { 'P', { 0 }},    // default no floppy write protected
-  { 'Q', { 9 }},    // Joystick port 1 mapping, off
-  { 'J', { 1 }},    // Joystick port 2 mapping, USB #1
+  { 'Q', { 0 }},    // Joystick port 1 mapping, off (Retro D9 = zero)
+  { 'J', { 2 }},    // Joystick port 2 mapping, USB #1 Joy
   { 'E', { 0 }},    // default standard = PAL
   { 'N', { 0 }},    // default MIDI = Off
   { 'G', { 0 }},    // default OSD Pause = Off
@@ -232,17 +232,17 @@ const unsigned char core_c64_keymap[] = {
 };  
   
 const unsigned char core_c64_modifier[] = {
-  /* usb modifer bits:
+  /* usb modifier bits:
      0     1      2    3    4     5      6    7
      LCTRL LSHIFT LALT LGUI RCTRL RSHIFT RALT RGUI
+     fpga64_keyboard.vhd expects 0x68+bit_index for modifiers
   */
-
-  MATRIX( 2,7), // ctrl (left)
-  MATRIX( 7,1), // lshift
-  MATRIX( 5,7), // lalt as CBM 
-  MATRIX( 7,1), // lshift  // lgui
-  MATRIX( 2,7), // ctrl (right)
-  MATRIX( 4,6), // rshift
-  MATRIX( 5,7), // ralt as CBM
-  MATRIX( 7,1)  // lshift  // rgui
+  0x68,  // bit 0: LCTRL  → ctrl
+  0x69,  // bit 1: LSHIFT → left shift
+  0x6A,  // bit 2: LALT   → CBM key
+  0x6B,  // bit 3: LGUI   → mod_key1
+  0x6C,  // bit 4: RCTRL  → ctrl (right)
+  0x6D,  // bit 5: RSHIFT → right shift
+  0x6E,  // bit 6: RALT   → CBM key
+  0x6F   // bit 7: RGUI   → mod_key2
 };

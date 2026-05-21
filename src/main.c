@@ -5,6 +5,10 @@
 
 #include "../mcu_hw.h"
 
+#ifdef ESP_PLATFORM
+#include "wifi_log.h"
+#endif
+
 #include "../config.h"
 #include "../sysctrl.h"
 #include "../sdc.h"
@@ -72,9 +76,18 @@ static void com_task(__attribute__((unused)) void *p ) {
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file
     sdc_mount_defaults();
+
+    // cold reset so the C64 boots with default images (especially CRT) already loaded.
+    // Without this, the CPU starts before the CRT ROM is in SDRAM and ignores it.
+    sys_set_val('R', 3);
+    sys_set_val('R', 0);
   }
 
   debugf("Entering main loop");
+
+#ifdef ESP_PLATFORM
+  wifi_log_main_loop_reached();
+#endif
   
   for(;;) {
     mcu_hw_irq_ack();  // re-enable interrupt
