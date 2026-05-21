@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NES configuration for NEStang on Papilio Retrocade -->
+<config name="NEStang" version="0">
+  <actions>
+    <!-- the init action is being executed immediately -->
+    <!-- when this file has been loaded -->
+    <action name="init">
+      <!-- (try to) load config from sd card -->
+      <load file="nes.ini"/>
+      <set id="R" value="1"/>  <!-- keep machine in reset -->
+    </action>
+
+    <!-- the ready action is being executed once all -->
+    <!-- initialization has been done -->
+    <action name="ready">
+      <set id="R" value="0"/>  <!-- release reset -->
+    </action>
+
+    <action name="save">
+      <!-- save config to sd card -->
+      <save file="nes.ini"/>
+    </action>
+
+    <action name="reset">
+      <!-- trigger a system reset -->
+      <set id="R" value="1"/>
+      <delay ms="10"/>
+      <set id="R" value="0"/>
+    </action>
+
+    <action name="reset_hide">
+      <!-- trigger a system reset and hide OSD -->
+      <link action="reset"/>
+      <hide/>
+    </action>
+  </actions>
+
+  <menu label="NEStang">
+    <fileselector label="Cartridge:" ext="NES" index="0"/>
+    <menu label="System">
+      <list label="Joyport 1:" id="Q" default="1">
+        <listentry label="USB #1 Joy" value="1"/>
+        <listentry label="USB #2 Joy" value="2"/>
+        <listentry label="Off" value="6"/>
+      </list>
+      <list label="Joyport 2:" id="J" default="6">
+        <listentry label="USB #1 Joy" value="1"/>
+        <listentry label="USB #2 Joy" value="2"/>
+        <listentry label="Off" value="6"/>
+      </list>
+      <button label="Reset" action="reset_hide"/>
+    </menu>
+    <menu label="Storage">
+      <fileselector label="Cartridge:" ext="NES" index="0"/>
+    </menu>
+    <menu label="Settings">
+      <list label="Scanlines:" id="S" default="0">
+        <listentry label="None" value="0"/>
+        <listentry label="25%" value="1"/>
+        <listentry label="50%" value="2"/>
+        <listentry label="75%" value="3"/>
+      </list>
+      <list label="Volume:" id="A" default="2">
+        <listentry label="Mute" value="0"/>
+        <listentry label="33%" value="1"/>
+        <listentry label="66%" value="2"/>
+        <listentry label="100%" value="3"/>
+      </list>
+      <button label="Save settings" action="save"/>
+    </menu>
+    <button label="Reset" action="reset_hide"/>
+  </menu>
+</config>

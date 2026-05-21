@@ -9,6 +9,7 @@
 #include "core_amiga.h"
 #include "core_atari2600.h"
 #include "core_snes.h"
+#include "core_nes.h"
 #include "sysctrl.h"    // for core_id
 #include "debug.h"
 
@@ -28,6 +29,8 @@ void core_set_default_images(void) {
     images = core_atari2600_default_images;
   else if(core_id == CORE_ID_SNES)
     images = core_snes_default_images;
+  else if(core_id == CORE_ID_NES)
+    images = core_nes_default_images;
   else
     debugf("%s: unsupported core %d", __func__, core_id);
 
@@ -49,6 +52,8 @@ uint8_t core_map_key(uint8_t code) {
     return core_atari2600_keymap[code];
   if(core_id == CORE_ID_SNES)
     return core_snes_keymap[code];
+  if(core_id == CORE_ID_NES)
+    return core_nes_keymap[code];
 
   debugf("%s: unsupported core %d", __func__, core_id);
   return 0;
@@ -67,6 +72,8 @@ uint8_t core_map_modifier_key(uint8_t code) {
     return core_atari2600_modifier[code];
   if(core_id == CORE_ID_SNES)
     return core_snes_modifier[code];
+  if(core_id == CORE_ID_NES)
+    return core_nes_modifier[code];
 
   debugf("%s: unsupported core %d", __func__, core_id);
   return 0;
@@ -85,6 +92,8 @@ const char **core_get_forms(void) {
     return core_atari2600_forms;
   if(core_id == CORE_ID_SNES)
     return core_snes_forms;
+  if(core_id == CORE_ID_NES)
+    return core_nes_forms;
 
   debugf("%s: unsupported core %d", __func__, core_id);
   return NULL;
@@ -103,6 +112,8 @@ menu_legacy_variable_t *core_get_variables(void) {
     return core_atari2600_variables;
   if(core_id == CORE_ID_SNES)
     return core_snes_variables;
+  if(core_id == CORE_ID_NES)
+    return core_nes_variables;
 
   debugf("%s: unsupported core %d", __func__, core_id);
   return NULL;

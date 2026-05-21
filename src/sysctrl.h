@@ -21,6 +21,7 @@
 #define CORE_ID_AMIGA    0x04
 #define CORE_ID_ATARI_2600    0x05
 #define CORE_ID_SNES          0x06
+#define CORE_ID_NES           0x07
 
 extern unsigned char core_id;
 

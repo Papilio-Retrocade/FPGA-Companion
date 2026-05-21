@@ -36,7 +36,9 @@ const char *sys_get_config_name(void) {
     CARD_MOUNTPOINT "/c64.xml",
     CARD_MOUNTPOINT "/vic20.xml",
     CARD_MOUNTPOINT "/amiga.xml",
-    CARD_MOUNTPOINT "/atari2600.xml"
+    CARD_MOUNTPOINT "/atari2600.xml",
+    CARD_MOUNTPOINT "/snes.xml",
+    CARD_MOUNTPOINT "/nes.xml"
   };
   return config_xml[core_id];
 }
