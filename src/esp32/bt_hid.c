@@ -291,6 +291,16 @@ void bt_hid_init(void)
     };
     ESP_ERROR_CHECK(esp_hidh_init(&config));
 
-    /* Scan task: finds and connects BLE HID peripherals */
+    /* Scan task: finds and connects BLE HID peripherals.
+     *
+     * Disabled for now — BLE scanning on the shared 2.4 GHz radio starves
+     * WiFi and the tangcore UART path, causing ROM loads to truncate or
+     * stall (purple screen).  USB HID still works.  Re-enable by defining
+     * BT_HID_SCAN_ENABLE in the build. */
+#ifdef BT_HID_SCAN_ENABLE
     xTaskCreate(bt_hid_scan_task, "bt_hid_scan", 4096, NULL, 2, NULL);
+#else
+    ESP_LOGW(TAG, "BLE HID scan task disabled at build time");
+    (void)bt_hid_scan_task;  /* avoid unused-function warning */
+#endif
 }

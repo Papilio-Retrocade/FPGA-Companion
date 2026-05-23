@@ -30,11 +30,22 @@ void mcu_hw_read_flash(uint32_t addr, uint8_t *data, uint32_t size);
 void mcu_hw_spi_flash_begin(void);
 void mcu_hw_spi_flash_end(void);
 esp_err_t mcu_hw_reinit_flash(void);
+void mcu_hw_spi_deinit(void);
 #endif
 
 // HW SPI interface
 void mcu_hw_spi_begin(void);
 unsigned char mcu_hw_spi_tx_u08(unsigned char b);
 void mcu_hw_spi_end(void);
+
+#ifdef ESP_PLATFORM
+// UART1 — TangCore / BL616 protocol (GPIO43=TX→E14, GPIO44=RX←C9, 2 Mbps)
+void mcu_hw_uart_init(void);
+void mcu_hw_uart_tx_byte(uint8_t b);
+void mcu_hw_uart_tx_buf(const uint8_t *buf, size_t len);
+void mcu_hw_uart_tx_flush(void);   /* block until TX ring buffer is empty */
+int  mcu_hw_uart_rx_available(void);
+uint8_t mcu_hw_uart_rx_byte(void);
+#endif
 
 #endif // MCU_HW_H

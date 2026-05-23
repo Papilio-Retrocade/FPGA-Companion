@@ -45,8 +45,10 @@ idf_component_register(SRCS
 	"../../core_amiga.c"
 	"../../core_atari2600.c"
 	"../../core_snes.c"
+	"../../core_nes.c"
 	"../../config.c"
 	"../../xml.c"
+	"../../tangcore.c"
 	"../mcu_hw.c"
 	"../wifi_log.c"
 	"../ota_server.c"
@@ -60,6 +62,21 @@ idf_component_register(SRCS
 	"."
 	".."
 	"../../u8g2/csrc"
+
+	REQUIRES
+	sdmmc
+	esp_driver_sdspi
+	fatfs
+	spi_flash
+	esp_timer
+	bt
+	app_update
+	esp_ringbuf
+	esp_wifi
+	esp_driver_uart
+	nvs_flash
+	esp_http_server
+	esp_hid
 )
 
 # Wrap _write_r at link time so __wrap__write_r intercepts both printf()

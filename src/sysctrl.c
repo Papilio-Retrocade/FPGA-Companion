@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "config.h"
 #include "mcu_hw.h"
+#include "tangcore.h"
 
 unsigned char core_id = 0;
 
@@ -40,6 +41,11 @@ const char *sys_get_config_name(void) {
     CARD_MOUNTPOINT "/snes.xml",
     CARD_MOUNTPOINT "/nes.xml"
   };
+  const int num_configs = sizeof(config_xml) / sizeof(config_xml[0]);
+  if(core_id >= num_configs) {
+    sys_debugf("WARNING: core_id=%d out of range, defaulting to config.xml", core_id);
+    return config_xml[0];
+  }
   return config_xml[core_id];
 }
 
@@ -174,6 +180,15 @@ bool sys_wait4fpga(void) {
     return true;
   }
   
+  /* Timed out.  If the UART tangcore_task has already claimed the interface
+   * (active_interface == 2), this is expected — the FPGA is running an
+   * iosys_bl616 core that doesn't respond to SPI.  Return false so that
+   * com_task can detect this and idle. */
+  if(active_interface == 2) {
+    sys_debugf("FPGA not SPI-ready — UART interface already active, OK");
+    return false;
+  }
+
   sys_debugf("FPGA not ready after 5 seconds!");
   // this is basically useless and will only work if the
   // FPGA receives requests but cannot answer them

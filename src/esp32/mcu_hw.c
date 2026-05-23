@@ -497,6 +497,23 @@ void mcu_hw_spi_init(void) {
   sys_wait4fpga();
 }
 
+/* Release SPI3 bus so tangcore_task can reclaim it for direct SD card access.
+ * Call only after com_task has entered its idle loop (active_interface == 2).
+ * After this returns, spi_bus_initialize(SPI3_HOST, ...) may be called again. */
+void mcu_hw_spi_deinit(void) {
+  debugf("mcu_hw_spi_deinit: releasing SPI3 for tangcore SD passthrough");
+  /* Remove external flash device first (it lives on the same bus) */
+  if(ext_flash) {
+    spi_bus_remove_flash_device(ext_flash);
+    ext_flash = NULL;
+    ext_flash_ready = false;
+  }
+  /* Remove the FPGA-bridge SPI device */
+  spi_bus_remove_device(spi);
+  /* Free the SPI bus */
+  spi_bus_free(SPI_HOST_ID);
+}
+
 esp_err_t mcu_hw_reinit_flash(void) {
   /* Probe and initialise the external flash chip.  The FPGA SRAM bootloader
    * must be running before calling this so that its SPI bridge is active.
@@ -592,6 +609,60 @@ void mcu_hw_read_flash(uint32_t addr, uint8_t *data, uint32_t size) {
 void mcu_hw_irq_ack(void) {
   // re-enable the interrupt since it was now serviced outside the irq handler
   gpio_intr_enable(PIN_NUM_IRQ);
+}
+
+/* ========================================================================= */
+/* =========           UART1 — TangCore / BL616 protocol         ========== */
+/* ========================================================================= */
+
+#include "driver/uart.h"
+#include "driver/gpio.h"
+
+#define UART_TANGCORE    UART_NUM_1
+#define PIN_NUM_UART_TX  43    // ESP32 TX → FPGA pin E14 (uart_rx)
+#define PIN_NUM_UART_RX  44    // FPGA pin C9 (uart_tx) → ESP32 RX
+#define UART_BAUD_RATE   2000000
+
+void mcu_hw_uart_init(void) {
+  const uart_config_t cfg = {
+    .baud_rate  = UART_BAUD_RATE,
+    .data_bits  = UART_DATA_8_BITS,
+    .parity     = UART_PARITY_DISABLE,
+    .stop_bits  = UART_STOP_BITS_1,
+    .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+    .source_clk = UART_SCLK_DEFAULT,
+  };
+  ESP_ERROR_CHECK(uart_driver_install(UART_TANGCORE, 2048, 2048, 0, NULL, 0));
+  ESP_ERROR_CHECK(uart_param_config(UART_TANGCORE, &cfg));
+  ESP_ERROR_CHECK(uart_set_pin(UART_TANGCORE,
+                               PIN_NUM_UART_TX, PIN_NUM_UART_RX,
+                               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+  debugf("UART1 init: TX=GPIO%d RX=GPIO%d @ %d baud",
+         PIN_NUM_UART_TX, PIN_NUM_UART_RX, UART_BAUD_RATE);
+}
+
+void mcu_hw_uart_tx_byte(uint8_t b) {
+  uart_write_bytes(UART_TANGCORE, &b, 1);
+}
+
+void mcu_hw_uart_tx_buf(const uint8_t *buf, size_t len) {
+  uart_write_bytes(UART_TANGCORE, buf, (int)len);
+}
+
+void mcu_hw_uart_tx_flush(void) {
+  uart_wait_tx_done(UART_TANGCORE, pdMS_TO_TICKS(3000));
+}
+
+int mcu_hw_uart_rx_available(void) {
+  size_t len = 0;
+  uart_get_buffered_data_len(UART_TANGCORE, &len);
+  return (int)len;
+}
+
+uint8_t mcu_hw_uart_rx_byte(void) {
+  uint8_t b = 0;
+  uart_read_bytes(UART_TANGCORE, &b, 1, portMAX_DELAY);
+  return b;
 }
 
 void mcu_hw_spi_begin() {
@@ -696,6 +767,7 @@ void mcu_hw_init(void) {
   wifi_log_init();
 
   mcu_hw_spi_init();
+  mcu_hw_uart_init();
 #if CONFIG_USB_HOST_ENABLE
   usb_init();
 #else

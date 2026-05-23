@@ -8,6 +8,7 @@
 #include "menu.h"
 
 #include "mcu_hw.h"
+#include "tangcore.h"
 
 #include <string.h>  // for memcpy
 
@@ -94,10 +95,10 @@ void kbd_parse(__attribute__((unused)) const hid_report_t *report, struct hid_kb
       if(core_map_modifier_key(i)) {      
 	// modifier released?
 	if((state->last_report[0] & (1<<i)) && !(buffer[0] & (1<<i)))
-	  kbd_tx(0x80 | core_map_modifier_key(i));
+	  if(active_interface != 2) kbd_tx(0x80 | core_map_modifier_key(i));
 	// modifier pressed?
 	if(!(state->last_report[0] & (1<<i)) && (buffer[0] & (1<<i)))
-	  kbd_tx(core_map_modifier_key(i));
+	  if(active_interface != 2) kbd_tx(core_map_modifier_key(i));
       }
     }
   } 
@@ -113,7 +114,7 @@ void kbd_parse(__attribute__((unused)) const hid_report_t *report, struct hid_kb
     if(buffer[2+i] != state->last_report[2+i]) {
       // key released?
       if(state->last_report[2+i] && !osd_is_visible() )
-	kbd_tx(0x80 | core_map_key(state->last_report[2+i]));
+	if(active_interface != 2) kbd_tx(0x80 | core_map_key(state->last_report[2+i]));
       
       // key pressed?
       if(buffer[2+i])  {
@@ -127,24 +128,25 @@ void kbd_parse(__attribute__((unused)) const hid_report_t *report, struct hid_kb
 	// Caution: Since the OSD closes on the press event, the following
 	// release event will be sent into the core. The core should thus
 	// cope with release events that did not have a press event before
-	if(buffer[2+i] == 0x45 || (osd_is_visible() && buffer[2+i] == 0x29) )
-	  msg = osd_is_visible()?MENU_EVENT_HIDE:MENU_EVENT_SHOW;
-	else {
-	  if(!osd_is_visible())
-	    kbd_tx(core_map_key(buffer[2+i]));
+	if(active_interface != 2) {
+	  if(buffer[2+i] == 0x45 || (osd_is_visible() && buffer[2+i] == 0x29) )
+	    msg = osd_is_visible()?MENU_EVENT_HIDE:MENU_EVENT_SHOW;
 	  else {
-	    // check if cursor up/down or space has been pressed
-	    if(buffer[2+i] == 0x51) msg = MENU_EVENT_DOWN;      
-	    if(buffer[2+i] == 0x52) msg = MENU_EVENT_UP;
-	    if(buffer[2+i] == 0x4e) msg = MENU_EVENT_PGDOWN;      
-	    if(buffer[2+i] == 0x4b) msg = MENU_EVENT_PGUP;
-	    if((buffer[2+i] == 0x2c) || (buffer[2+i] == 0x28))
-	      msg = MENU_EVENT_SELECT;
+	    if(!osd_is_visible())
+	      kbd_tx(core_map_key(buffer[2+i]));
+	    else {
+	      // check if cursor up/down or space has been pressed
+	      if(buffer[2+i] == 0x51) msg = MENU_EVENT_DOWN;      
+	      if(buffer[2+i] == 0x52) msg = MENU_EVENT_UP;
+	      if(buffer[2+i] == 0x4e) msg = MENU_EVENT_PGDOWN;      
+	      if(buffer[2+i] == 0x4b) msg = MENU_EVENT_PGUP;
+	      if((buffer[2+i] == 0x2c) || (buffer[2+i] == 0x28))
+		msg = MENU_EVENT_SELECT;
+	    }
 	  }
+	  // send message to menu task
+	  if(msg) menu_notify(msg);
 	}
-
-	// send message to menu task
-	if(msg) menu_notify(msg);
       }   
     }
   }
@@ -152,6 +154,25 @@ void kbd_parse(__attribute__((unused)) const hid_report_t *report, struct hid_kb
 
   // check if numpad joystick has changed state and send message if so
   if(core_id == CORE_ID_C64||core_id == CORE_ID_VIC20||core_id == CORE_ID_ATARI_2600) kbd_num2joy(2, 0);
+
+  // Tangcore mode: map keyboard arrow keys / Enter / Escape to tc_joy[0]
+  if(active_interface == 2) {
+    static uint16_t s_tc_kbd_joy_last = 0xFFFFu;
+    uint16_t tc = 0;
+    for(int i=0;i<6;i++) {
+      uint8_t k = state->last_report[2+i];
+      if(k == 0x52) tc |= TANGCORE_BTN_UP;    // Up arrow
+      if(k == 0x51) tc |= TANGCORE_BTN_DOWN;  // Down arrow
+      if(k == 0x50) tc |= TANGCORE_BTN_LEFT;  // Left arrow
+      if(k == 0x4f) tc |= TANGCORE_BTN_RIGHT; // Right arrow
+      if(k == 0x28 || k == 0x2c) tc |= TANGCORE_BTN_A; // Enter / Space = select
+      if(k == 0x29) tc |= TANGCORE_BTN_B;     // Escape = back
+    }
+    if(tc != s_tc_kbd_joy_last) {
+      tangcore_set_joy(0, tc);
+      s_tc_kbd_joy_last = tc;
+    }
+  }
 }
 
 // collect bits from byte stream and assemble them into a signed word
@@ -370,15 +391,33 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
     state->last_state_btn_extra = btn_extra;
     // usb_debugf("JOY%d: D %02x A0 %02x A1 %02x B %02x", state->js_index, joy, ax, ay, btn_extra);
 
-    mcu_hw_spi_begin();
-    mcu_hw_spi_tx_u08(SPI_TARGET_HID);
-    mcu_hw_spi_tx_u08(SPI_HID_JOYSTICK);
-    mcu_hw_spi_tx_u08(state->js_index);
-    mcu_hw_spi_tx_u08(joy);
-    mcu_hw_spi_tx_u08(ax); // e.g. gamepad X
-    mcu_hw_spi_tx_u08(ay); // e.g. gamepad Y
-    mcu_hw_spi_tx_u08(btn_extra); // e.g. gamepad extra buttons
-    mcu_hw_spi_end();
+    if(active_interface == 2) {
+      // Tangcore mode: translate hid.c joy bits to TANGCORE_BTN_* (16-bit SNES format)
+      // hid.c joy: bit0=right, bit1=left, bit2=down, bit3=up, bit4=A, bit5=B, bit6=X, bit7=Y
+      // btn_extra: bit0=LT, bit1=RT, bit2=LB, bit3=RB
+      uint16_t tc = 0;
+      if(joy & 0x08) tc |= TANGCORE_BTN_UP;
+      if(joy & 0x04) tc |= TANGCORE_BTN_DOWN;
+      if(joy & 0x02) tc |= TANGCORE_BTN_LEFT;
+      if(joy & 0x01) tc |= TANGCORE_BTN_RIGHT;
+      if(joy & 0x10) tc |= TANGCORE_BTN_A;
+      if(joy & 0x20) tc |= TANGCORE_BTN_B;
+      if(joy & 0x40) tc |= TANGCORE_BTN_X;
+      if(joy & 0x80) tc |= TANGCORE_BTN_Y;
+      if(btn_extra & 0x04) tc |= TANGCORE_BTN_L;  // LB/L1
+      if(btn_extra & 0x08) tc |= TANGCORE_BTN_R;  // RB/R1
+      tangcore_set_joy(state->js_index < 2 ? (int)state->js_index : 0, tc);
+    } else {
+      mcu_hw_spi_begin();
+      mcu_hw_spi_tx_u08(SPI_TARGET_HID);
+      mcu_hw_spi_tx_u08(SPI_HID_JOYSTICK);
+      mcu_hw_spi_tx_u08(state->js_index);
+      mcu_hw_spi_tx_u08(joy);
+      mcu_hw_spi_tx_u08(ax); // e.g. gamepad X
+      mcu_hw_spi_tx_u08(ay); // e.g. gamepad Y
+      mcu_hw_spi_tx_u08(btn_extra); // e.g. gamepad extra buttons
+      mcu_hw_spi_end();
+    }
   }
 }
 

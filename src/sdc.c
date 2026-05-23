@@ -520,6 +520,7 @@ int sdc_image_open(int drive, char *name) {
 
       // re-alloc sufficient memory
       lktbl[drive] = realloc(lktbl[drive], sizeof(DWORD) * lktbl[drive][0]);
+      fil[drive].cltbl = lktbl[drive];  // update cltbl pointer after realloc
 
       // and retry link table creation
       if(f_lseek(&fil[drive], CREATE_LINKMAP)) {

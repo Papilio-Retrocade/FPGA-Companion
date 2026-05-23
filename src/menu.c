@@ -1395,7 +1395,7 @@ void menu_init(void) {
   menu_queue = xQueueCreate(10, sizeof( long ) );
   
   // start a thread for the on screen display    
-  xTaskCreate(menu_task, (char *)"menu_task", 4096, NULL, configMAX_PRIORITIES-3, NULL);
+  xTaskCreate(menu_task, (char *)"menu_task", 8192, NULL, configMAX_PRIORITIES-3, NULL);
 }
   
 void menu_notify(unsigned long msg) {

@@ -49,8 +49,8 @@ const char *core_nes_forms[] = {
 
 // Q J S A
 menu_legacy_variable_t core_nes_variables[] = {
-  { 'Q', { 1 }},    // Joyport 1 = USB #1 Joy
-  { 'J', { 6 }},    // Joyport 2 = Off
+  { 'Q', { 0 }},    // Joyport 1 = USB #1 Joy
+  { 'J', { 2 }},    // Joyport 2 = Off
   { 'S', { 0 }},    // Scanlines = None
   { 'A', { 2 }},    // Volume = 66%
   { '\0',{ 0 }}

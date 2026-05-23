@@ -204,6 +204,10 @@ static esp_err_t handle_update(httpd_req_t *req)
     ESP_LOGI(TAG, "OTA update started: %d bytes → partition '%s'",
              req->content_len, update_part->label);
 
+    /* Pause BLE scanning for the duration of upload.
+     * BLE scan cycles share the radio with WiFi and cause TCP stalls. */
+    bt_hid_set_scan_paused(true);
+
     esp_ota_handle_t ota_handle = 0;
     err = esp_ota_begin(update_part, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
     if (err != ESP_OK) {
@@ -215,6 +219,7 @@ static esp_err_t handle_update(httpd_req_t *req)
     char *buf = malloc(OTA_RECV_BUF);
     if (!buf) {
         esp_ota_abort(ota_handle);
+        bt_hid_set_scan_paused(false);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
@@ -231,6 +236,7 @@ static esp_err_t handle_update(httpd_req_t *req)
             ESP_LOGE(TAG, "Receive error (%d)", recv);
             free(buf);
             esp_ota_abort(ota_handle);
+            bt_hid_set_scan_paused(false);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
@@ -241,6 +247,7 @@ static esp_err_t handle_update(httpd_req_t *req)
                 ESP_LOGE(TAG, "Invalid image magic 0x%02x (expected 0xE9)", (uint8_t)buf[0]);
                 free(buf);
                 esp_ota_abort(ota_handle);
+                bt_hid_set_scan_paused(false);
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                                     "Not a valid ESP32 firmware binary");
                 return ESP_FAIL;
@@ -253,6 +260,7 @@ static esp_err_t handle_update(httpd_req_t *req)
             ESP_LOGE(TAG, "esp_ota_write: %s", esp_err_to_name(err));
             free(buf);
             esp_ota_abort(ota_handle);
+            bt_hid_set_scan_paused(false);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Flash write failed");
             return ESP_FAIL;
         }
@@ -267,6 +275,7 @@ static esp_err_t handle_update(httpd_req_t *req)
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end: %s", esp_err_to_name(err));
+        bt_hid_set_scan_paused(false);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Image validation failed");
         return ESP_FAIL;
@@ -275,6 +284,7 @@ static esp_err_t handle_update(httpd_req_t *req)
     err = esp_ota_set_boot_partition(update_part);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
+        bt_hid_set_scan_paused(false);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Set boot partition failed");
         return ESP_FAIL;
     }
