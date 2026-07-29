@@ -6,6 +6,15 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 (GW2A-18C FPGA + ESP32-S3) on top of Till Harbaum's upstream
 [FPGA-Companion](https://github.com/harbaum/FPGA-Companion).
 
+## [Unreleased]
+
+### Added
+- WiFi credentials can now be set on an already-flashed device via NVS
+  (namespace `wifi_cfg`, keys `ssid`/`pass`), without rebuilding firmware.
+  Falls back to the compiled-in `CONFIG_WIFI_LOG_SSID`/`CONFIG_WIFI_LOG_PASSWORD`
+  when no NVS override is present. See `src/esp32/WIFI_NVS_PROVISIONING.md`
+  for the `esptool` + `nvs_partition_gen` workflow.
+
 ## [1.0.0] - 2026-05-21
 
 First stable release for the Papilio Retrocade. All features below are additions

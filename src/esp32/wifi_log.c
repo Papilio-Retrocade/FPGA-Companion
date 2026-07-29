@@ -215,6 +215,45 @@ void wifi_log_early_init(void) {
     if (s_blink_timer) xTimerStart(s_blink_timer, 0);
 }
 
+/*
+ * Builds the STA wifi_config_t, preferring credentials stored in NVS
+ * (namespace "wifi_cfg", keys "ssid"/"pass") over the values baked in at
+ * compile time (CONFIG_WIFI_LOG_SSID/PASSWORD).
+ *
+ * This lets an end user (re)configure WiFi on an already-flashed device
+ * using only esptool + nvs_partition_gen.py (pip: esp-idf-nvs-partition-gen)
+ * to write a small NVS image at the "nvs" partition offset — no ESP-IDF
+ * toolchain or firmware rebuild required. See WIFI_NVS_PROVISIONING.md.
+ */
+static void wifi_log_load_credentials(wifi_config_t *wifi_cfg) {
+    memset(wifi_cfg, 0, sizeof(*wifi_cfg));
+    strncpy((char *)wifi_cfg->sta.ssid, CONFIG_WIFI_LOG_SSID, sizeof(wifi_cfg->sta.ssid) - 1);
+    strncpy((char *)wifi_cfg->sta.password, CONFIG_WIFI_LOG_PASSWORD, sizeof(wifi_cfg->sta.password) - 1);
+    wifi_cfg->sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi_cfg", NVS_READONLY, &nvs) != ESP_OK) {
+        return;  /* no override present - stick with the compiled-in defaults */
+    }
+
+    char ssid[33] = {0};
+    size_t len = sizeof(ssid);
+    if (nvs_get_str(nvs, "ssid", ssid, &len) == ESP_OK && ssid[0] != '\0') {
+        memset(wifi_cfg->sta.ssid, 0, sizeof(wifi_cfg->sta.ssid));
+        strncpy((char *)wifi_cfg->sta.ssid, ssid, sizeof(wifi_cfg->sta.ssid) - 1);
+        ESP_LOGI(TAG, "wifi_log: using SSID from NVS override");
+    }
+
+    char password[65] = {0};
+    len = sizeof(password);
+    if (nvs_get_str(nvs, "pass", password, &len) == ESP_OK) {
+        memset(wifi_cfg->sta.password, 0, sizeof(wifi_cfg->sta.password));
+        strncpy((char *)wifi_cfg->sta.password, password, sizeof(wifi_cfg->sta.password) - 1);
+    }
+
+    nvs_close(nvs);
+}
+
 void wifi_log_init(void) {
     /* NVS is required by the WiFi driver */
     esp_err_t ret = nvs_flash_init();
@@ -239,13 +278,8 @@ void wifi_log_init(void) {
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                         &wifi_event_handler, NULL, &instance_got_ip);
 
-    wifi_config_t wifi_cfg = {
-        .sta = {
-            .ssid     = CONFIG_WIFI_LOG_SSID,
-            .password = CONFIG_WIFI_LOG_PASSWORD,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
+    wifi_config_t wifi_cfg;
+    wifi_log_load_credentials(&wifi_cfg);
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
