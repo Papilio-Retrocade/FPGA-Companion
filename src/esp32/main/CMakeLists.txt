@@ -45,6 +45,7 @@ idf_component_register(SRCS
 	"../../core_amiga.c"
 	"../../core_atari2600.c"
 	"../../core_snes.c"
+	"../../core_nes.c"
 	"../../config.c"
 	"../../xml.c"
 	"../mcu_hw.c"
