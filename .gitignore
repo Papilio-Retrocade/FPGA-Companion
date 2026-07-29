@@ -59,3 +59,9 @@ src/esp32/debug.log
 src/esp32/dependencies.lock
 src/esp32/sdkconfig
 
+# Build artifacts and release staging
+src/esp32/build_release/
+src/esp32/sdkconfig.release
+src/esp32/*.log
+release_v*/
+
