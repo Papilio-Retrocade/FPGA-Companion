@@ -60,4 +60,17 @@ menu "OTA Firmware Update"
         help
             TCP port the OTA HTTP server listens on. Default 3232 avoids
             conflict with common services. Must be 1024-65535.
+
+    config OTA_CORS_ALLOW_ORIGIN
+        string "CORS Allowed Origin (for browser-based flashing)"
+        default "*"
+        depends on OTA_ENABLE
+        help
+            Value sent in the Access-Control-Allow-Origin header, and used to
+            satisfy Chrome's Private Network Access preflight so a HTTPS page
+            (e.g. the hosted web flasher at papilioworks.com/flash) can POST
+            directly to this device's OTA endpoints from a browser.
+
+            Set to your hosting domain (e.g. https://papilioworks.com) for
+            production. "*" is fine for local development/testing.
 endmenu

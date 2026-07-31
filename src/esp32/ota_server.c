@@ -45,6 +45,52 @@
 
 static const char *TAG = "ota_server";
 
+/* =========================================================================
+ * CORS / Private Network Access support
+ *
+ * Lets a browser-hosted page (e.g. the hosted web flasher at
+ * papilioworks.com/flash) call these endpoints directly via fetch() from a
+ * different origin. Chrome additionally requires the target to answer the
+ * OPTIONS preflight with Access-Control-Allow-Private-Network before it will
+ * let a public HTTPS page talk to a device on the local network.
+ * ========================================================================= */
+
+static void add_cors_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", CONFIG_OTA_CORS_ALLOW_ORIGIN);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Private-Network", "true");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, Content-Length");
+}
+
+/* Wrap every response call with add_cors_headers() without touching each of
+ * the call sites below. Real functions are captured here before the macros
+ * make httpd_resp_send_err/httpd_resp_sendstr expand to these wrappers for
+ * the rest of this file. */
+static esp_err_t ota_send_err_impl(httpd_req_t *req, httpd_err_code_t error, const char *msg)
+{
+    add_cors_headers(req);
+    return httpd_resp_send_err(req, error, msg);
+}
+
+static esp_err_t ota_send_str_impl(httpd_req_t *req, const char *msg)
+{
+    add_cors_headers(req);
+    return httpd_resp_sendstr(req, msg);
+}
+
+#define httpd_resp_send_err(req, error, msg) ota_send_err_impl(req, error, msg)
+#define httpd_resp_sendstr(req, msg)         ota_send_str_impl(req, msg)
+
+/* Generic OPTIONS preflight handler, shared by every POST endpoint below. */
+static esp_err_t handle_options_preflight(httpd_req_t *req)
+{
+    add_cors_headers(req);
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 /* Mutex to prevent concurrent JTAG programming requests */
 static SemaphoreHandle_t s_jtag_mutex = NULL;
 
@@ -175,6 +221,7 @@ static esp_err_t handle_status(httpd_req_t *req)
         CONFIG_OTA_PORT,
         CONFIG_OTA_PORT);
 
+    add_cors_headers(req);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -1010,7 +1057,9 @@ void ota_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_OTA_PORT;
-    cfg.max_uri_handlers = 6;  /* status, ESP32 update, FPGA flash update, FPGA JTAG update, FPGA recover, flash-write */
+    /* status, ESP32 update, FPGA flash update, FPGA JTAG update, FPGA recover,
+     * flash-write, plus one OPTIONS preflight handler for each POST endpoint. */
+    cfg.max_uri_handlers = 11;
     cfg.stack_size       = 8192;
     cfg.recv_wait_timeout = 15;   /* 15 s per recv — long stalls indicate a dead TCP connection,
                                      not a slow client.  Don't hang forever and leave flash half-erased. */
@@ -1064,7 +1113,21 @@ void ota_server_start(void)
     };
     httpd_register_uri_handler(server, &flash_write_uri);
 
+    /* OPTIONS preflight for every POST endpoint (Chrome sends this before
+     * each cross-origin POST when Private Network Access is in play). */
+    static const char *cors_paths[] = {
+        "/update", "/fpga-update", "/fpga-jtag-sram", "/fpga-recover", "/flash-write",
+    };
+    static httpd_uri_t options_uris[5];
+    for (size_t i = 0; i < sizeof(cors_paths) / sizeof(cors_paths[0]); i++) {
+        options_uris[i].uri     = cors_paths[i];
+        options_uris[i].method  = HTTP_OPTIONS;
+        options_uris[i].handler = handle_options_preflight;
+        httpd_register_uri_handler(server, &options_uris[i]);
+    }
+
     ESP_LOGI(TAG, "OTA server ready on port %d", CONFIG_OTA_PORT);
+    ESP_LOGI(TAG, "  CORS origin    : %s", CONFIG_OTA_CORS_ALLOW_ORIGIN);
     ESP_LOGI(TAG, "  Status         : curl http://<device-ip>:%d/", CONFIG_OTA_PORT);
     ESP_LOGI(TAG, "  ESP32 upload   : curl -X POST http://<device-ip>:%d/update --data-binary @build/fpga_companion.bin",
              CONFIG_OTA_PORT);

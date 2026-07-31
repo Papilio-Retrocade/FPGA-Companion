@@ -50,6 +50,7 @@ idf_component_register(SRCS
 	"../../xml.c"
 	"../mcu_hw.c"
 	"../wifi_log.c"
+	"../wifi_provision.c"
 	"../ota_server.c"
 	"../jtag_gowin.c"
 	"../bt_hid.c"

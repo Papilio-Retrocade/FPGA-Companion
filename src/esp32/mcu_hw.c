@@ -24,6 +24,7 @@
 #include "esp_rom_sys.h"
 
 #include "wifi_log.h"
+#include "wifi_provision.h"
 #include "bt_hid.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
@@ -668,6 +669,7 @@ void mcu_hw_init(void) {
   // gpio_set_pull_mode(PIN_NUM_RECONFIG_N, GPIO_PULLUP_ONLY);
   // gpio_set_level(PIN_NUM_RECONFIG_N, 1);
   wifi_log_early_init();
+  wifi_provision_start();
 
   const char *rr_str = "?";
   switch (reset_reason) {

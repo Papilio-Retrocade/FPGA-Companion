@@ -16,6 +16,22 @@ before falling back to those compiled-in values, using namespace `wifi_cfg`:
 If neither key is present in NVS, behavior is unchanged — the firmware uses
 `CONFIG_WIFI_LOG_SSID`/`CONFIG_WIFI_LOG_PASSWORD` exactly as before.
 
+## Option A: Over USB serial (no extra tools, used by the hosted web flasher)
+
+While connected to the device's console UART/USB (the same port used to
+flash firmware), send two newline-terminated lines:
+
+```
+WIFI_SSID=YourNetworkName
+WIFI_PASS=YourNetworkPassword
+```
+
+The device writes both values to the `wifi_cfg` NVS namespace, acknowledges
+each with `WIFI_CFG_OK ssid` / `WIFI_CFG_OK pass`, then reboots once both are
+set. See `wifi_provision.c` for the implementation.
+
+## Option B: Pre-built NVS image via esptool
+
 This means you can set (or change) WiFi credentials on an **already-flashed**
 device using only `esptool` and Espressif's official `nvs_partition_gen`
 utility — no ESP-IDF toolchain, no firmware rebuild, and it survives future
