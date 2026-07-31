@@ -9,6 +9,11 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 ## [Unreleased]
 
 ### Added
+- FPGA bitstream flashing over USB serial (`FPGA_FLASH_BEGIN <target> <size>`),
+  as a fallback for Step 3 of the hosted web flasher when no device IP is
+  known/reachable. Reuses the same erase/write and JTAG-SRAM-load code paths
+  as `/fpga-update` and `/fpga-jtag-sram`, just with a serial byte source
+  instead of HTTP. See `src/esp32/serial_flash.h` and `OTA_REFERENCE.md`.
 - CORS + Chrome Private Network Access headers on all OTA endpoints
   (`/update`, `/fpga-update`, `/fpga-jtag-sram`, `/fpga-recover`,
   `/flash-write`), plus an `OPTIONS` preflight handler for each. Lets a

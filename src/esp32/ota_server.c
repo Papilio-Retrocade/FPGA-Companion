@@ -97,6 +97,17 @@ static SemaphoreHandle_t s_jtag_mutex = NULL;
 /* Shared JTAG initialisation flag (once per boot) */
 static bool s_jtag_initialized = false;
 
+/* Lazily create s_jtag_mutex. Needed because serial_flash.c's fallback path
+ * can run before ota_server_start() ever does (that only happens once WiFi
+ * connects), so the mutex can't rely on being created there first. */
+static SemaphoreHandle_t ensure_jtag_mutex(void)
+{
+    if (s_jtag_mutex == NULL) {
+        s_jtag_mutex = xSemaphoreCreateMutex();
+    }
+    return s_jtag_mutex;
+}
+
 /* Pre-allocated decompression buffers for bootloader SRAM loading.
  * Placed in BSS so they're guaranteed available regardless of heap state.
  * Ring buffer must be 32 KB (DEFLATE max look-back window).  Reused on
@@ -109,8 +120,8 @@ static tinfl_decompressor s_bootloader_decomp;
 /* Receive buffer size (bytes). Larger = faster upload but more heap. */
 #define OTA_RECV_BUF 4096
 #define FPGA_FLASH_BUF 8192
-#define FPGA_FLASH_ADDR 0x000000  /* FPGA bitstream location in SPI flash */
-#define FPGA_FLASH_SIZE 0x200000  /* 2 MB max for FPGA bitstream */
+#define FPGA_FLASH_ADDR OTA_FPGA_FLASH_ADDR  /* FPGA bitstream location in SPI flash */
+#define FPGA_FLASH_SIZE OTA_FPGA_FLASH_SIZE  /* 2 MB max for FPGA bitstream */
 #define ROM_FLASH_MIN_ADDR 0x200000 /* Minimum safe address for /flash-write (protects bitstream) */
 #define ROM_FLASH_MAX_SIZE 0x8000   /* 32 KB max per ROM write */
 
@@ -348,9 +359,9 @@ static esp_err_t handle_update(httpd_req_t *req)
  * The compressed bitstream lives in ESP32 flash (const, zero RAM overhead).
  * ========================================================================= */
 
-static esp_err_t load_bootloader_to_sram(void)
+esp_err_t ota_server_load_bootloader_to_sram(void)
 {
-    if (xSemaphoreTake(s_jtag_mutex, pdMS_TO_TICKS(30000)) != pdTRUE) {
+    if (xSemaphoreTake(ensure_jtag_mutex(), pdMS_TO_TICKS(30000)) != pdTRUE) {
         ESP_LOGE(TAG, "Timeout acquiring JTAG mutex for bootloader load");
         return ESP_ERR_TIMEOUT;
     }
@@ -527,7 +538,7 @@ static esp_err_t handle_fpga_update(httpd_req_t *req)
      * If the FPGA was already running a valid bitstream, JTAG programming
      * simply replaces it with the known-good bootloader. */
     ESP_LOGI(TAG, "Pre-loading embedded bootloader to FPGA SRAM");
-    esp_err_t bl_err = load_bootloader_to_sram();
+    esp_err_t bl_err = ota_server_load_bootloader_to_sram();
     if (bl_err != ESP_OK) {
         ESP_LOGE(TAG, "Bootloader SRAM load failed (%s) — aborting flash update",
                  esp_err_to_name(bl_err));
@@ -892,7 +903,7 @@ static esp_err_t handle_flash_write(httpd_req_t *req)
     sys_set_suppress_reset(true);
 
     /* Load bootloader to FPGA SRAM so SPI pins are bridged to the ESP32 */
-    esp_err_t err = load_bootloader_to_sram();
+    esp_err_t err = ota_server_load_bootloader_to_sram();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Bootloader SRAM load failed: %s", esp_err_to_name(err));
         bt_hid_set_scan_paused(false);
@@ -1004,7 +1015,7 @@ static esp_err_t handle_fpga_recover(httpd_req_t *req)
     bt_hid_set_scan_paused(true);
 
     /* Step 1: load bootloader to SRAM via JTAG */
-    esp_err_t err = load_bootloader_to_sram();
+    esp_err_t err = ota_server_load_bootloader_to_sram();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Recovery: SRAM bootloader load failed: %s", esp_err_to_name(err));
         bt_hid_set_scan_paused(false);
@@ -1049,11 +1060,29 @@ static esp_err_t handle_fpga_recover(httpd_req_t *req)
  * Public API
  * ========================================================================= */
 
+bool ota_server_jtag_lock(uint32_t timeout_ms)
+{
+    return xSemaphoreTake(ensure_jtag_mutex(), pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void ota_server_jtag_unlock(void)
+{
+    xSemaphoreGive(s_jtag_mutex);
+}
+
+esp_err_t ota_server_jtag_ensure_init(void)
+{
+    if (!s_jtag_initialized) {
+        esp_err_t err = jtag_gowin_init(NULL);
+        if (err != ESP_OK) return err;
+        s_jtag_initialized = true;
+    }
+    return ESP_OK;
+}
+
 void ota_server_start(void)
 {
-    if (s_jtag_mutex == NULL) {
-        s_jtag_mutex = xSemaphoreCreateMutex();
-    }
+    ensure_jtag_mutex();
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_OTA_PORT;

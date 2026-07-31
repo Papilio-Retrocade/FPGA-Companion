@@ -52,6 +52,7 @@ idf_component_register(SRCS
 	"../wifi_log.c"
 	"../wifi_provision.c"
 	"../ota_server.c"
+	"../serial_flash.c"
 	"../jtag_gowin.c"
 	"../bt_hid.c"
 	"../esp_hid_gap.c"
