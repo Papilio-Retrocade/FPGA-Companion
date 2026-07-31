@@ -6,6 +6,19 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 (GW2A-18C FPGA + ESP32-S3) on top of Till Harbaum's upstream
 [FPGA-Companion](https://github.com/harbaum/FPGA-Companion).
 
+## [Unreleased]
+
+### Added
+- CORS + Chrome Private Network Access headers on all OTA endpoints
+  (`/update`, `/fpga-update`, `/fpga-jtag-sram`, `/fpga-recover`,
+  `/flash-write`), plus an `OPTIONS` preflight handler for each. Lets a
+  browser-hosted page (the papilioworks.com/flash hosted web flasher) POST
+  directly to the device instead of needing a local relay agent. Allowed
+  origin is configurable via `CONFIG_OTA_CORS_ALLOW_ORIGIN` (default `"*"`).
+- WiFi credentials can now be provisioned over USB serial (`WIFI_SSID=`/
+  `WIFI_PASS=` lines), in addition to the existing NVS-image method. See
+  `src/esp32/wifi_provision.c` and `src/esp32/WIFI_NVS_PROVISIONING.md`.
+
 ## [1.0.1] - 2026-07-28
 
 ### Added

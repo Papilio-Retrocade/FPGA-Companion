@@ -15,6 +15,12 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_WL_SECTOR_SIZE_512=y
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
 
+# Primary console must be USB Serial/JTAG (not UART0) so stdin (wifi_provision's
+# getchar()) actually reads from the same USB port used for flashing/monitoring.
+# Default (UART0 primary + USB Serial/JTAG as output-only secondary) means
+# nothing is ever connected to stdin on boards that only wire out the USB port.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 # ── WiFi UDP Logging ────────────────────────────────────────────────────────
 # On your PC run:  ncat -u -l 7777   (Windows / Nmap)
 #                  nc -u -l -p 7777  (Linux / macOS)
@@ -29,6 +35,9 @@ CONFIG_WIFI_LOG_PASSWORD="YourPassword"
 # SuperMini ESP32-S3 ships with 4 MB or 8 MB flash; verify with: esptool.py flash_id
 CONFIG_OTA_ENABLE=y
 CONFIG_OTA_PORT=3232
+# CORS origin for the hosted web flasher (browser fetch() to /fpga-update etc).
+# "*" works for local testing; set to your hosting domain for production.
+CONFIG_OTA_CORS_ALLOW_ORIGIN="*"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
 # Set to match your actual flash chip size (4MB is typical for SuperMini ESP32-S3)

@@ -9,6 +9,18 @@ OTA supports **two update types**:
 - **ESP32 firmware**: Dual-partition scheme with automatic rollback on failure
 - **FPGA bitstreams**: Direct flash write to 0x100000 with automatic reconfiguration
 
+### Browser access (hosted web flasher)
+
+Every endpoint responds to the `OPTIONS` preflight and sets
+`Access-Control-Allow-Origin` / `Access-Control-Allow-Private-Network: true`,
+so a browser page (e.g. papilioworks.com/flash) can `fetch()` these endpoints
+directly from JavaScript instead of needing a local agent. Configure the
+allowed origin with `CONFIG_OTA_CORS_ALLOW_ORIGIN` (default `"*"`).
+
+WiFi credentials can also be set over the same USB serial port used to flash
+the ESP32 firmware — send `WIFI_SSID=<ssid>\n` then `WIFI_PASS=<pass>\n`
+before the device reconnects; see `wifi_provision.h`.
+
 ---
 
 ## Quick Reference
