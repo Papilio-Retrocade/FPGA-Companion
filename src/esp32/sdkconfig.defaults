@@ -15,6 +15,12 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_WL_SECTOR_SIZE_512=y
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
 
+# Primary console must be USB Serial/JTAG (not UART0) so stdin (wifi_provision's
+# getchar()) actually reads from the same USB port used for flashing/monitoring.
+# Default (UART0 primary + USB Serial/JTAG as output-only secondary) means
+# nothing is ever connected to stdin on boards that only wire out the USB port.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 # ── WiFi UDP Logging ────────────────────────────────────────────────────────
 # On your PC run:  ncat -u -l 7777   (Windows / Nmap)
 #                  nc -u -l -p 7777  (Linux / macOS)

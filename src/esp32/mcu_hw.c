@@ -34,6 +34,11 @@
 /* =========                          USB                        =========== */
 /* ========================================================================= */
 
+/* Fixed delay before USB Host bring-up, giving a developer time to send
+ * USB_HOST_HOLD over serial (see wifi_provision.c) and keep the console
+ * alive instead of switching to USB Host mode. */
+#define USB_HOST_GRACE_MS 5000
+
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
 
@@ -700,14 +705,21 @@ void mcu_hw_init(void) {
   mcu_hw_spi_init();
 #if CONFIG_USB_HOST_ENABLE
   /* USB Host mode reuses the same GPIO19/20 pins as the USB-Serial/JTAG
-   * console, so bringing it up before WiFi is configured would cut off the
-   * only channel available to provision the device (see wifi_provision.c).
-   * Skip it on an unprovisioned board; it resumes normally after the
-   * WiFi-configured reboot. */
-  if (wifi_provision_is_configured()) {
+   * console, so bringing it up cuts off the only channel available to
+   * provision the device or use it as a debug console (see
+   * wifi_provision.c). Hold it off on an unprovisioned board, and give a
+   * fixed grace period on every boot for a developer to send USB_HOST_HOLD
+   * over serial and stay in console mode even when WiFi is already
+   * configured. USB_HOST_RESUME brings USB Host up on demand afterwards,
+   * without a reboot. */
+  wifi_provision_set_usb_resume_callback(usb_init);
+  debugf("USB Host starts in %d s - send USB_HOST_HOLD over serial to stay in console/debug mode", USB_HOST_GRACE_MS / 1000);
+  vTaskDelay(pdMS_TO_TICKS(USB_HOST_GRACE_MS));
+  if (!wifi_provision_should_hold_usb_host()) {
     usb_init();
+    wifi_provision_notify_usb_started();
   } else {
-    debugf("WiFi not yet configured — USB Host (game controllers) held off until provisioned via serial");
+    debugf("USB Host held off (WiFi not configured or USB_HOST_HOLD active) - send USB_HOST_RESUME over serial to start it now");
   }
 #else
   debugf("USB host disabled — Serial/JTAG active for debugging");

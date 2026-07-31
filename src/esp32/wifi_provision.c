@@ -56,6 +56,40 @@ static esp_err_t save_credential(const char *key, const char *value)
     return err;
 }
 
+static esp_err_t save_usb_hold(bool hold)
+{
+    esp_err_t err = ensure_nvs_ready();
+    if (err != ESP_OK) return err;
+
+    nvs_handle_t nvs;
+    err = nvs_open("wifi_cfg", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_u8(nvs, "usb_hold", hold ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+
+    nvs_close(nvs);
+    return err;
+}
+
+static bool load_usb_hold(void)
+{
+    esp_err_t err = ensure_nvs_ready();
+    if (err != ESP_OK) return false;
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi_cfg", NVS_READONLY, &nvs) != ESP_OK) return false;
+
+    uint8_t v = 0;
+    err = nvs_get_u8(nvs, "usb_hold", &v);
+    nvs_close(nvs);
+
+    return err == ESP_OK && v != 0;
+}
+
+static bool s_usb_started = false;
+static void (*s_usb_resume_cb)(void) = NULL;
+
 /* Blocks reading one newline-terminated line from stdin. Returns the number
  * of characters read (excluding the newline), or 0 for an empty line.
  *
@@ -109,6 +143,17 @@ static void provision_task(void *arg)
             } else {
                 printf("WIFI_CFG_ERR pass\r\n");
             }
+        } else if (strcmp(line, "USB_HOST_HOLD") == 0) {
+            save_usb_hold(true);
+            printf("USB_HOST_HOLD_OK\r\n");
+        } else if (strcmp(line, "USB_HOST_RESUME") == 0) {
+            save_usb_hold(false);
+            printf("USB_HOST_RESUME_OK\r\n");
+            if (!s_usb_started && s_usb_resume_cb) {
+                s_usb_started = true;
+                ESP_LOGI(TAG, "Resuming USB Host mode on request");
+                s_usb_resume_cb();
+            }
         }
 
         if (got_ssid && got_pass) {
@@ -140,6 +185,21 @@ bool wifi_provision_is_configured(void)
     nvs_close(nvs);
 
     return err == ESP_OK && ssid[0] != '\0';
+}
+
+bool wifi_provision_should_hold_usb_host(void)
+{
+    return load_usb_hold() || !wifi_provision_is_configured();
+}
+
+void wifi_provision_set_usb_resume_callback(void (*cb)(void))
+{
+    s_usb_resume_cb = cb;
+}
+
+void wifi_provision_notify_usb_started(void)
+{
+    s_usb_started = true;
 }
 
 #endif /* CONFIG_WIFI_LOG_ENABLE */

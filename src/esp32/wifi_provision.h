@@ -11,12 +11,20 @@
  * Protocol (line-based, newline terminated, sent over the console UART/USB):
  *   WIFI_SSID=<ssid>\n
  *   WIFI_PASS=<password>\n
+ *   USB_HOST_HOLD\n
+ *   USB_HOST_RESUME\n
  *
  * Credentials are stored in NVS namespace "wifi_cfg" (keys "ssid"/"pass") -
  * the same location used by the manual esptool + nvs_partition_gen workflow
  * documented in WIFI_NVS_PROVISIONING.md. Once both values are received the
  * device acknowledges over serial and reboots to connect with the new
  * credentials.
+ *
+ * USB_HOST_HOLD/USB_HOST_RESUME let a developer keep the USB-Serial/JTAG
+ * console alive for debugging on any board with CONFIG_USB_HOST_ENABLE,
+ * even one that already has WiFi provisioned (which would otherwise switch
+ * to USB Host mode almost immediately). The choice is persisted in NVS
+ * ('usb_hold' key) so it survives reboots until explicitly resumed.
  */
 
 #include "sdkconfig.h"
@@ -41,10 +49,34 @@ void wifi_provision_start(void);
  */
 bool wifi_provision_is_configured(void);
 
+/**
+ * True if USB Host bring-up should be held off right now: either WiFi isn't
+ * configured yet, or USB_HOST_HOLD was requested over serial (persisted in
+ * NVS across reboots until USB_HOST_RESUME).
+ */
+bool wifi_provision_should_hold_usb_host(void);
+
+/**
+ * Registers the function that brings up USB Host mode. If USB Host was held
+ * off at boot, sending "USB_HOST_RESUME" over serial invokes this
+ * immediately instead of requiring a reboot.
+ */
+void wifi_provision_set_usb_resume_callback(void (*cb)(void));
+
+/**
+ * Tells wifi_provision that USB Host has already been started (normal boot
+ * path), so a later USB_HOST_RESUME command becomes a no-op instead of
+ * calling the resume callback a second time.
+ */
+void wifi_provision_notify_usb_started(void);
+
 #else
 
 static inline void wifi_provision_start(void) {}
 static inline bool wifi_provision_is_configured(void) { return true; }
+static inline bool wifi_provision_should_hold_usb_host(void) { return false; }
+static inline void wifi_provision_set_usb_resume_callback(void (*cb)(void)) { (void)cb; }
+static inline void wifi_provision_notify_usb_started(void) {}
 
 #endif /* CONFIG_WIFI_LOG_ENABLE */
 
