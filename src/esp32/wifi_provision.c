@@ -57,13 +57,25 @@ static esp_err_t save_credential(const char *key, const char *value)
 }
 
 /* Blocks reading one newline-terminated line from stdin. Returns the number
- * of characters read (excluding the newline), or 0 for an empty line. */
+ * of characters read (excluding the newline), or 0 for an empty line.
+ *
+ * getchar() is expected to block until a byte arrives, but if stdin isn't
+ * actually connected to a live console (e.g. no serial monitor attached)
+ * some VFS backends return EOF immediately instead of blocking. Without a
+ * delay here that turns into a tight loop that starves the idle task and
+ * trips the watchdog, so back off briefly on EOF rather than retrying instantly.
+ */
 static size_t read_line(char *buf, size_t buf_size)
 {
     size_t len = 0;
     int c;
 
-    while ((c = getchar()) != EOF) {
+    for (;;) {
+        c = getchar();
+        if (c == EOF) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
         if (c == '\r') continue;
         if (c == '\n') break;
         if (len < buf_size - 1) buf[len++] = (char)c;
@@ -112,6 +124,22 @@ static void provision_task(void *arg)
 void wifi_provision_start(void)
 {
     xTaskCreate(provision_task, "wifi_provision", 4096, NULL, 5, NULL);
+}
+
+bool wifi_provision_is_configured(void)
+{
+    esp_err_t err = ensure_nvs_ready();
+    if (err != ESP_OK) return false;
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi_cfg", NVS_READONLY, &nvs) != ESP_OK) return false;
+
+    char ssid[33] = {0};
+    size_t len = sizeof(ssid);
+    err = nvs_get_str(nvs, "ssid", ssid, &len);
+    nvs_close(nvs);
+
+    return err == ESP_OK && ssid[0] != '\0';
 }
 
 #endif /* CONFIG_WIFI_LOG_ENABLE */

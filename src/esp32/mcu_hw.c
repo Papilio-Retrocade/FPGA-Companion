@@ -699,7 +699,16 @@ void mcu_hw_init(void) {
 
   mcu_hw_spi_init();
 #if CONFIG_USB_HOST_ENABLE
-  usb_init();
+  /* USB Host mode reuses the same GPIO19/20 pins as the USB-Serial/JTAG
+   * console, so bringing it up before WiFi is configured would cut off the
+   * only channel available to provision the device (see wifi_provision.c).
+   * Skip it on an unprovisioned board; it resumes normally after the
+   * WiFi-configured reboot. */
+  if (wifi_provision_is_configured()) {
+    usb_init();
+  } else {
+    debugf("WiFi not yet configured — USB Host (game controllers) held off until provisioned via serial");
+  }
 #else
   debugf("USB host disabled — Serial/JTAG active for debugging");
 #endif

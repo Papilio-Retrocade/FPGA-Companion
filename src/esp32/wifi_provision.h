@@ -20,6 +20,7 @@
  */
 
 #include "sdkconfig.h"
+#include <stdbool.h>
 
 #if defined(CONFIG_WIFI_LOG_ENABLE)
 
@@ -30,9 +31,20 @@
  */
 void wifi_provision_start(void);
 
+/**
+ * True once WiFi credentials have been saved to NVS by a previous
+ * provisioning cycle (i.e. the "ssid" key exists in the "wifi_cfg"
+ * namespace). Callers use this to decide whether it's safe to bring up USB
+ * Host mode: on this hardware, USB Host reuses the same GPIO19/20 pins as
+ * the USB-Serial/JTAG console, so bringing it up before WiFi is configured
+ * would cut off the only channel available to provision the device.
+ */
+bool wifi_provision_is_configured(void);
+
 #else
 
 static inline void wifi_provision_start(void) {}
+static inline bool wifi_provision_is_configured(void) { return true; }
 
 #endif /* CONFIG_WIFI_LOG_ENABLE */
 
