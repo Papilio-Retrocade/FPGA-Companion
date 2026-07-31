@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 
 #include "wifi_provision.h"
 
@@ -26,10 +27,26 @@ static const char *TAG = "wifi_provision";
 
 #define PROVISION_LINE_MAX 96
 
+/* wifi_provision_start() runs before wifi_log_init()'s nvs_flash_init(), so
+ * ensure NVS is ready here too (nvs_flash_init() is safe to call again). */
+static esp_err_t ensure_nvs_ready(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        err = nvs_flash_erase();
+        if (err != ESP_OK) return err;
+        err = nvs_flash_init();
+    }
+    return err;
+}
+
 static esp_err_t save_credential(const char *key, const char *value)
 {
+    esp_err_t err = ensure_nvs_ready();
+    if (err != ESP_OK) return err;
+
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &nvs);
+    err = nvs_open("wifi_cfg", NVS_READWRITE, &nvs);
     if (err != ESP_OK) return err;
 
     err = nvs_set_str(nvs, key, value);
