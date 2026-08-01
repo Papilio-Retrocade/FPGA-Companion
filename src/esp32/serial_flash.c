@@ -21,6 +21,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 
 #include "serial_flash.h"
@@ -38,32 +39,114 @@ static const char *TAG = "serial_flash";
 #define SERIAL_FLASH_STALL_MS     30000
 #define SERIAL_FLASH_EOF_DELAY_MS 20
 
+/* RX ring buffer for the low-level usb_serial_jtag driver used during the
+ * raw payload phase (see serial_flash_io_begin/end below). Sized well above
+ * the 64-byte USB-FS packet size so the driver's ISR can absorb bursts
+ * between our read_raw_bytes() calls without stalling the host. */
+#define SERIAL_FLASH_DRIVER_RX_BUF 16384
+#define SERIAL_FLASH_DRIVER_TX_BUF 256
+
 /* Console's default RX line-ending mode (CONFIG_LIBC_STDIN_LINE_ENDING_CR in
  * sdkconfig.release converts every raw 0x0D byte to 0x0A). Must be restored
  * after reading the raw bitstream or the text-line commands in
  * wifi_provision.c stop parsing correctly. */
 #define CONSOLE_DEFAULT_RX_LINE_ENDINGS ESP_LINE_ENDINGS_CR
 
-/* Blocks reading exactly `n` raw bytes from stdin, no line-ending translation
- * (caller must have already switched to ESP_LINE_ENDINGS_LF). getchar() can
- * return EOF when no byte is available yet on this non-blocking VFS - back
- * off briefly and retry, same pattern as wifi_provision.c's read_line().
- * Gives up after SERIAL_FLASH_STALL_MS of no data (e.g. host disappeared
- * mid-transfer) rather than hanging forever with flash/JTAG state half-open. */
+/* Whether the low-level usb_serial_jtag driver is currently installed for
+ * the raw payload phase (see serial_flash_io_begin/end). When false,
+ * read_raw_bytes() falls back to the slow stdio path. */
+static bool s_driver_installed = false;
+
+/* A handful of bytes that got over-read into stdio's internal FILE* buffer
+ * while wifi_provision.c's getchar()-based line reader parsed the
+ * FPGA_FLASH_BEGIN command line, drained via serial_flash_io_begin() before
+ * the low-level driver takes over the RX FIFO. */
+static uint8_t s_prefix_buf[64];
+static size_t  s_prefix_len = 0;
+static size_t  s_prefix_off = 0;
+
+/* Prepares for the raw payload transfer: drains whatever's already sitting
+ * in stdio's buffer (never blocks - fread() returns 0 immediately if
+ * nothing is buffered), then installs the low-level usb_serial_jtag driver
+ * so read_raw_bytes() can use its ISR-fed ring buffer instead of the
+ * default console VFS's single-shot, effectively-non-blocking FIFO peek
+ * (which caps throughput at roughly one 64-byte USB packet per
+ * SERIAL_FLASH_EOF_DELAY_MS, i.e. only a few KB/s). */
+static void serial_flash_io_begin(void)
+{
+    s_prefix_len = 0;
+    s_prefix_off = 0;
+    size_t r;
+    while (s_prefix_len < sizeof(s_prefix_buf) &&
+           (r = fread(s_prefix_buf + s_prefix_len, 1, sizeof(s_prefix_buf) - s_prefix_len, stdin)) > 0) {
+        s_prefix_len += r;
+    }
+    clearerr(stdin);
+
+    usb_serial_jtag_driver_config_t drv_cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    drv_cfg.rx_buffer_size = SERIAL_FLASH_DRIVER_RX_BUF;
+    drv_cfg.tx_buffer_size = SERIAL_FLASH_DRIVER_TX_BUF;
+    esp_err_t err = usb_serial_jtag_driver_install(&drv_cfg);
+    if (err == ESP_OK) {
+        s_driver_installed = true;
+    } else {
+        ESP_LOGW(TAG, "usb_serial_jtag_driver_install failed (%s), falling back to slow stdio reads", esp_err_to_name(err));
+        s_driver_installed = false;
+    }
+}
+
+/* Hands the RX FIFO back to the console's default VFS path so getchar()-based
+ * text commands keep working after the transfer completes. */
+static void serial_flash_io_end(void)
+{
+    if (s_driver_installed) {
+        usb_serial_jtag_driver_uninstall();
+        s_driver_installed = false;
+    }
+}
+
+/* Blocks reading exactly `n` raw bytes. Serves the small stdio-buffered
+ * prefix captured by serial_flash_io_begin() first, then reads the bulk of
+ * the transfer via the low-level usb_serial_jtag driver's blocking
+ * usb_serial_jtag_read_bytes(), which receives from an ISR-fed ring buffer
+ * instead of the default console VFS's single-shot FIFO peek (that peek
+ * returns EWOULDBLOCK immediately whenever the 64-byte hardware FIFO
+ * happens to be momentarily empty, regardless of the fd's blocking mode -
+ * see usb_serial_jtag_vfs.c - which drove our old fread()-based loop into
+ * its stall-retry delay almost every call and capped throughput at only a
+ * few KB/s). Falls back to fread() on stdin if the driver failed to
+ * install. Gives up after SERIAL_FLASH_STALL_MS of no data (e.g. host
+ * disappeared mid-transfer) rather than hanging forever with flash/JTAG
+ * state half-open. */
 static bool read_raw_bytes(uint8_t *buf, size_t n)
 {
+    size_t got = 0;
+
+    if (s_prefix_off < s_prefix_len) {
+        size_t avail = s_prefix_len - s_prefix_off;
+        size_t take  = avail < n ? avail : n;
+        memcpy(buf, s_prefix_buf + s_prefix_off, take);
+        s_prefix_off += take;
+        got = take;
+    }
+
     int stalled_ms = 0;
-    for (size_t i = 0; i < n; i++) {
-        int c;
-        for (;;) {
-            c = getchar();
-            if (c != EOF) break;
-            vTaskDelay(pdMS_TO_TICKS(SERIAL_FLASH_EOF_DELAY_MS));
+    while (got < n) {
+        size_t r;
+        if (s_driver_installed) {
+            r = (size_t)usb_serial_jtag_read_bytes(buf + got, n - got, pdMS_TO_TICKS(SERIAL_FLASH_EOF_DELAY_MS));
+        } else {
+            r = fread(buf + got, 1, n - got, stdin);
+            if (r == 0) clearerr(stdin);
+        }
+        if (r > 0) {
+            got += r;
+            stalled_ms = 0;
+        } else {
+            if (!s_driver_installed) vTaskDelay(pdMS_TO_TICKS(SERIAL_FLASH_EOF_DELAY_MS));
             stalled_ms += SERIAL_FLASH_EOF_DELAY_MS;
             if (stalled_ms >= SERIAL_FLASH_STALL_MS) return false;
         }
-        stalled_ms = 0;
-        buf[i] = (uint8_t)c;
     }
     return true;
 }
@@ -287,7 +370,11 @@ bool serial_flash_try_handle_command(const char *line)
      * VFS translating it to 0x0A for the duration of the transfer. */
     usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
 
+    serial_flash_io_begin();
+
     esp_err_t err = is_flash ? serial_flash_write_spi(size) : serial_flash_write_sram(size);
+
+    serial_flash_io_end();
 
     usb_serial_jtag_vfs_set_rx_line_endings(CONSOLE_DEFAULT_RX_LINE_ENDINGS);
 
