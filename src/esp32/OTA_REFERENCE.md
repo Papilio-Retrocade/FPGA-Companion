@@ -21,6 +21,24 @@ WiFi credentials can also be set over the same USB serial port used to flash
 the ESP32 firmware — send `WIFI_SSID=<ssid>\n` then `WIFI_PASS=<pass>\n`
 before the device reconnects; see `wifi_provision.h`.
 
+### USB serial fallback (no IP required)
+
+If the device's IP isn't known/reachable, the FPGA bitstream can be written
+over the same USB serial connection instead — no WiFi required. See
+`serial_flash.h` for the line protocol:
+
+```
+Host → Device:  FPGA_FLASH_BEGIN <target> <size>\n   (target: flash | sram)
+Device → Host:  READY\r\n                            (or ERROR <reason>\r\n)
+Host → Device:  <raw bitstream bytes, exactly <size>>
+Device → Host:  PROGRESS <bytes>\r\n                 (periodically)
+Device → Host:  FPGA_FLASH_OK\r\n                    (or FPGA_FLASH_ERROR <reason>\r\n)
+```
+
+`target=flash` writes to SPI flash (persistent, same region as `/fpga-update`).
+`target=sram` programs the FPGA via JTAG (volatile, same as `/fpga-jtag-sram`).
+There is no serial equivalent of `/fpga-recover` yet — use the HTTP endpoint.
+
 ---
 
 ## Quick Reference

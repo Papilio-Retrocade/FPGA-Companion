@@ -22,6 +22,7 @@
 #include "nvs_flash.h"
 
 #include "wifi_provision.h"
+#include "serial_flash.h"
 
 static const char *TAG = "wifi_provision";
 
@@ -128,6 +129,14 @@ static void provision_task(void *arg)
     for (;;) {
         size_t len = read_line(line, sizeof(line));
         if (len == 0) continue;
+
+        /* Single dispatcher for all console commands - only one task ever
+         * reads stdin, so route non-WiFi commands here rather than racing a
+         * second reader task. Handles the whole exchange (including reading
+         * the raw bitstream bytes) before returning. */
+        if (serial_flash_try_handle_command(line)) {
+            continue;
+        }
 
         if (strncmp(line, "WIFI_SSID=", 10) == 0) {
             if (save_credential("ssid", line + 10) == ESP_OK) {
