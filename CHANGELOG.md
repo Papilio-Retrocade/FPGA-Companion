@@ -8,6 +8,35 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-01
+
+### Fixed
+- `FPGA_FLASH_BEGIN target=flash` reliability fixes found while validating the
+  hosted web flasher's USB-serial fallback end-to-end:
+  - The bootloader-SRAM-load + SPI-bridge-init + full-region erase now all
+    run to completion *before* the device replies `READY`, instead of
+    starting the erase after replying `READY`. Previously, a host that
+    started streaming the payload the instant it saw `READY` could overrun
+    the USB-Serial/JTAG driver's small RX ring buffer while the erase was
+    still running, stalling the transport with no recovery. `READY` is
+    also now sent with a leading `\r\n` to flush any stray boot-log
+    fragment still queued in the TX FIFO.
+  - `mcu_hw_erase_flash_region()` now erases the 2MB region in 64KB chunks
+    with a `vTaskDelay(1)` between each, instead of one long blocking
+    `esp_flash_erase_region()` call — the latter starved the idle task long
+    enough to trip the 5s task watchdog and reset the MCU mid-erase.
+  - Added a bounded wait for SPI-bus initialization (`mcu_hw_spi_init()`)
+    before touching `ext_flash`, fixing a boot-time race where a
+    serial-triggered flash command arriving in the ~5-25s window before
+    `mcu_hw_spi_init()` runs could dereference an uninitialized SPI bus
+    lock context and panic.
+  - `target=flash` now ACKs every chunk (`PROGRESS <n>`) instead of only
+    every 64KB, so a host can use it for per-chunk flow control (see the
+    matching `papilioworks.com/flash/flash.js` fix) instead of streaming
+    the whole payload as fast as the OS/USB stack accepts it.
+- `tools/test_serial_flash.py`: matching per-chunk ACK wait and a longer
+  (90s) timeout waiting for `READY`.
+
 ## [1.1.0] - 2026-07-31
 
 ### Added

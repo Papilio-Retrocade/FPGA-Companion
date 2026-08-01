@@ -56,10 +56,12 @@ def next_line(timeout=10):
     leftover = buf
     return None
 
-# Wait for READY / ERROR
+# Wait for READY / ERROR. For target=flash the board does bootloader-SRAM
+# load + SPI init + full-region erase *before* replying READY, which can
+# take up to ~60s worst case - keep this generous.
 start = time.time()
 ready_line = None
-while time.time() - start < 10:
+while time.time() - start < 90:
     line = next_line(timeout=1)
     if line is None:
         continue
@@ -79,8 +81,32 @@ written = 0
 while written < size:
     end = min(written + CHUNK, size)
     ser.write(data[written:end])
+    ser.flush()
     written = end
-ser.flush()
+
+    # Per-chunk flow control: wait for the device's PROGRESS ack before
+    # sending more. The device's usb_serial_jtag RX ring buffer is small
+    # (16 KB) - without this, the whole payload gets handed to the OS/USB
+    # stack immediately and can overrun that buffer, wedging the USB
+    # transport permanently if a flash write is ever slower than the
+    # incoming byte rate.
+    acked = False
+    ack_deadline = time.time() + 10
+    while time.time() < ack_deadline:
+        line = next_line(timeout=1)
+        if line is None:
+            continue
+        print(f"<< {line}", flush=True)
+        if line.startswith("FPGA_FLASH_ERROR"):
+            print(f"FAILED: {line!r}", flush=True)
+            sys.exit(1)
+        m = line.startswith("PROGRESS")
+        if m and int(line.split()[1]) >= written:
+            acked = True
+            break
+    if not acked:
+        print(f"FAILED: no PROGRESS ack after {written} bytes", flush=True)
+        sys.exit(1)
 print(f"Wrote {written} bytes in {time.time()-t0:.2f}s, waiting for result...", flush=True)
 
 final = None

@@ -419,6 +419,29 @@ static void usb_init(void) {
 esp_flash_t* ext_flash;
 static bool ext_flash_ready = false;
 
+/* Set once mcu_hw_spi_init() has actually called spi_bus_initialize()/
+ * spi_bus_add_flash_device() for SPI_HOST_ID. mcu_hw_init() starts the serial
+ * command listener (wifi_provision.c's provision_task, which dispatches
+ * FPGA_FLASH_BEGIN) well before calling mcu_hw_spi_init() — there's a ~5s
+ * fixed delay plus WiFi connect retries (up to ~20s) in between. If a serial
+ * FPGA-flash command arrives and finishes its data transfer inside that
+ * window, touching `ext_flash`/the SPI bus before this flag is set would
+ * dereference an uninitialized (NULL) SPI bus lock context and panic. */
+static volatile bool s_spi_bus_ready = false;
+
+/* Bounded wait for s_spi_bus_ready, used by mcu_hw_reinit_flash()/
+ * ensure_flash_ready() instead of assuming the SPI bus is already up. */
+static bool wait_for_spi_bus_ready(void) {
+  const int SPI_BUS_READY_TIMEOUT_MS = 30000;
+  int waited_ms = 0;
+  while (!s_spi_bus_ready) {
+    if (waited_ms >= SPI_BUS_READY_TIMEOUT_MS) return false;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    waited_ms += 50;
+  }
+  return true;
+}
+
 /* Config used when creating/recreating the flash device handle. */
 static const esp_flash_spi_device_config_t flash_device_cfg = {
     .host_id   = SPI_HOST_ID,
@@ -499,6 +522,7 @@ void mcu_hw_spi_init(void) {
    * handler after the SRAM bootloader has brought the SPI bridge up. */
   ESP_ERROR_CHECK(spi_bus_add_flash_device(&ext_flash, &flash_device_cfg));
   debugf("External flash device registered (init deferred until FPGA SPI bridge ready)");
+  s_spi_bus_ready = true;
 
   sys_wait4fpga();
 }
@@ -510,6 +534,11 @@ esp_err_t mcu_hw_reinit_flash(void) {
    * handle — field-clearing alone doesn't reset host-side SPI state. */
   const int MAX_RETRIES = 5;
   const int RETRY_DELAY_MS[] = { 500, 1000, 1500, 2000, 2000 };
+
+  if (!wait_for_spi_bus_ready()) {
+    debugf("External flash init aborted: SPI bus never became ready (mcu_hw_spi_init still pending)");
+    return ESP_ERR_INVALID_STATE;
+  }
 
   ext_flash_ready = false;
 
@@ -556,6 +585,11 @@ esp_err_t mcu_hw_reinit_flash(void) {
 static esp_err_t ensure_flash_ready(void) {
   if (ext_flash_ready) return ESP_OK;
 
+  if (!wait_for_spi_bus_ready()) {
+    debugf("Flash lazy-init aborted: SPI bus never became ready (mcu_hw_spi_init still pending)");
+    return ESP_ERR_INVALID_STATE;
+  }
+
   /* Remove and re-add for a clean handle, then probe. */
   spi_bus_remove_flash_device(ext_flash);
   ext_flash = NULL;
@@ -580,9 +614,23 @@ static esp_err_t ensure_flash_ready(void) {
   return err;
 }
 
+/* Erasing the full 2MB FPGA bitstream region in one esp_flash_erase_region()
+ * call busy-polls the SPI bus back-to-back for every 64KB block with no
+ * scheduler yield in between, starving the idle task on this core for long
+ * enough to trip the task watchdog (CONFIG_ESP_TASK_WDT_TIMEOUT_S, 5s) and
+ * reset the MCU mid-erase. Erase in chunks and yield between them instead. */
+#define ERASE_CHUNK_SIZE 65536
+
 void mcu_hw_erase_flash_region(uint32_t addr, uint32_t size) {
   if (ensure_flash_ready() != ESP_OK) return;
-  esp_flash_erase_region(ext_flash, addr, size);
+
+  uint32_t offset = 0;
+  while (offset < size) {
+    uint32_t chunk = size - offset < ERASE_CHUNK_SIZE ? size - offset : ERASE_CHUNK_SIZE;
+    esp_flash_erase_region(ext_flash, addr + offset, chunk);
+    offset += chunk;
+    vTaskDelay(1);  /* let the idle task run so the watchdog is fed */
+  }
 }
 
 void mcu_hw_write_flash(uint32_t addr, uint8_t *data, uint32_t size) {
