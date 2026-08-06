@@ -42,6 +42,8 @@
 #include "wifi_log.h"
 #include "../sysctrl.h"
 #include "bootloader_data.h"
+#include "../sdc.h"
+#include "../osd.h"
 
 static const char *TAG = "ota_server";
 
@@ -124,6 +126,10 @@ static tinfl_decompressor s_bootloader_decomp;
 #define FPGA_FLASH_SIZE OTA_FPGA_FLASH_SIZE  /* 2 MB max for FPGA bitstream */
 #define ROM_FLASH_MIN_ADDR 0x200000 /* Minimum safe address for /flash-write (protects bitstream) */
 #define ROM_FLASH_MAX_SIZE 0x8000   /* 32 KB max per ROM write */
+
+#define ROM_LOAD_MAX_SIZE (1024 * 1024) /* 1 MB cap -- covers every cart/disk-style core */
+#define ROM_LOAD_DRIVE    0             /* cartridge/ROM slot for A2600/NES/SNES */
+#define ROM_LOAD_DIR      CARD_MOUNTPOINT "/roms"
 
 /* JTAG Programming Task - runs in separate task to avoid blocking HTTP server */
 typedef struct {
@@ -223,10 +229,14 @@ static esp_err_t handle_status(httpd_req_t *req)
         "    curl -X POST http://<device-ip>:%d/fpga-jtag-sram --data-binary @bitstream.fs\r\n"
         "\r\n"
         "  Write ROM/data to SPI flash at arbitrary offset (addr >= 0x200000):\r\n"
-        "    curl -X POST \"http://<device-ip>:%d/flash-write?addr=0x200000\" --data-binary @2dosa_c.bin\r\n",
+        "    curl -X POST \"http://<device-ip>:%d/flash-write?addr=0x200000\" --data-binary @2dosa_c.bin\r\n"
+        "\r\n"
+        "  Load a ROM/cart/disk image onto the SD card and hot-insert it (drive 0):\r\n"
+        "    curl -X POST \"http://<device-ip>:%d/rom-load?name=game.a26\" --data-binary @game.a26\r\n",
         running ? running->label : "unknown",
         app->version,
         app->date, app->time,
+        CONFIG_OTA_PORT,
         CONFIG_OTA_PORT,
         CONFIG_OTA_PORT,
         CONFIG_OTA_PORT,
@@ -1056,6 +1066,174 @@ static esp_err_t handle_fpga_recover(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* 503 Service Unavailable helper -- httpd_err_code_t has no 503 constant */
+static esp_err_t ota_send_service_unavailable(httpd_req_t *req, const char *msg)
+{
+    add_cors_headers(req);
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, msg, strlen(msg));
+    return ESP_FAIL;
+}
+
+/* Reject path separators/traversal -- caller must supply a bare filename */
+static bool rom_load_name_is_safe(const char *name)
+{
+    if (!name || !*name) return false;
+    if (strchr(name, '/') || strchr(name, '\\')) return false;
+    if (strstr(name, "..")) return false;
+    if (!strchr(name, '.')) return false;  /* require an extension */
+    if (strlen(name) >= FF_LFN_BUF) return false;
+    return true;
+}
+
+/* =========================================================================
+ * POST /rom-load?name=<filename>[&insert=0]
+ *
+ * Uploads a ROM/cart/disk image to /roms/<filename> on the SD card, then
+ * hot-inserts it into drive 0 via sdc_image_open() -- exactly what the OSD
+ * file browser does when a user picks a file. Zero gateware changes; works
+ * on every core (A2600, NES, SNES, C64, ...) that reads images from the SD
+ * card. Pass ?insert=0 to upload without mounting.
+ *
+ * Usage:
+ *   curl -X POST "http://<device-ip>:3232/rom-load?name=frogger.a26" --data-binary @frogger.a26
+ * ========================================================================= */
+
+static esp_err_t handle_rom_load(httpd_req_t *req)
+{
+    char query[192]       = {0};
+    char name[FF_LFN_BUF] = {0};
+    char insert_str[8]    = {0};
+    bool do_insert         = true;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Missing required query parameter: ?name=game.a26");
+        return ESP_FAIL;
+    }
+
+    if (httpd_query_key_value(query, "insert", insert_str, sizeof(insert_str)) == ESP_OK)
+        do_insert = (strcmp(insert_str, "0") != 0);
+
+    if (!rom_load_name_is_safe(name)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Invalid name: use a bare filename with an extension, no '/', '\\' or '..'");
+        return ESP_FAIL;
+    }
+
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+
+    if (req->content_len > ROM_LOAD_MAX_SIZE) {
+        ESP_LOGE(TAG, "ROM too large: %d bytes (max %d)", req->content_len, ROM_LOAD_MAX_SIZE);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Data too large (max 1 MB)");
+        return ESP_FAIL;
+    }
+
+    /* Refuse while a flash/JTAG operation is mid-flight (shares the FPGA SPI bridge) */
+    if (xSemaphoreTake(ensure_jtag_mutex(), 0) != pdTRUE) {
+        return ota_send_service_unavailable(req,
+            "Busy: a flash/JTAG operation is in progress, try again shortly\r\n");
+    }
+    xSemaphoreGive(s_jtag_mutex);
+
+    char path[sizeof(ROM_LOAD_DIR) + FF_LFN_BUF + 2];
+    snprintf(path, sizeof(path), ROM_LOAD_DIR "/%s", name);
+
+    ESP_LOGI(TAG, "ROM load: %d bytes -> %s", req->content_len, path);
+
+    sdc_lock();
+    f_mkdir(ROM_LOAD_DIR);  /* ignore error: FR_EXIST if it's already there */
+
+    FIL fil;
+    if (f_open(&fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        sdc_unlock();
+        ESP_LOGE(TAG, "f_open failed for %s (no SD card?)", path);
+        return ota_send_service_unavailable(req, "SD card write failed (no card inserted?)\r\n");
+    }
+
+    char *buf = malloc(OTA_RECV_BUF);
+    if (!buf) {
+        f_close(&fil);
+        sdc_unlock();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    int  remaining = req->content_len;
+    int  written   = 0;
+    bool recv_err  = false;
+
+    while (remaining > 0) {
+        int to_recv = (remaining < OTA_RECV_BUF) ? remaining : OTA_RECV_BUF;
+        int recv    = httpd_req_recv(req, buf, to_recv);
+        if (recv == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (recv <= 0) {
+            ESP_LOGE(TAG, "Receive error (%d) after %d bytes", recv, written);
+            recv_err = true;
+            break;
+        }
+
+        UINT bw = 0;
+        if (f_write(&fil, buf, recv, &bw) != FR_OK || bw != (UINT)recv) {
+            ESP_LOGE(TAG, "SD write error after %d bytes", written);
+            recv_err = true;
+            break;
+        }
+
+        written   += recv;
+        remaining -= recv;
+    }
+
+    free(buf);
+    f_close(&fil);
+
+    if (recv_err) {
+        f_unlink(path);  /* don't leave a half-written ROM the OSD could later pick up */
+        sdc_unlock();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed, partial file removed");
+        return ESP_FAIL;
+    }
+
+    sdc_unlock();
+
+    ESP_LOGI(TAG, "ROM write complete: %d bytes -> %s", written, path);
+
+    bool osd_open  = osd_is_visible();
+    bool inserted  = false;
+    if (do_insert && !osd_open) {
+        /* sdc_set_default() points drive 0's cwd at /roms; sdc_image_open()
+         * then opens the file and reports it to the core -- same call the
+         * OSD file browser makes when a user picks a file. */
+        sdc_set_default(ROM_LOAD_DRIVE, path);
+        if (sdc_image_open(ROM_LOAD_DRIVE, name) == 0) {
+            inserted = true;
+        } else {
+            ESP_LOGE(TAG, "sdc_image_open failed for %s", path);
+        }
+    } else if (do_insert && osd_open) {
+        ESP_LOGW(TAG, "OSD is open -- file saved but skipping hot-insert to avoid a race");
+    }
+
+    const char *status_msg =
+             !do_insert ? "Upload only (insert=0), not mounted." :
+             inserted   ? "Cartridge inserted." :
+             osd_open   ? "OSD is open; file saved but not mounted." :
+                          "Mount failed (core not ready?); file saved.";
+    char resp[sizeof(path) + 128];
+    snprintf(resp, sizeof(resp),
+             "ROM upload successful! %d bytes -> %s\r\n%s\r\n",
+             written, path, status_msg);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, resp);
+
+    return ESP_OK;
+}
+
 /* =========================================================================
  * Public API
  * ========================================================================= */
@@ -1087,8 +1265,8 @@ void ota_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_OTA_PORT;
     /* status, ESP32 update, FPGA flash update, FPGA JTAG update, FPGA recover,
-     * flash-write, plus one OPTIONS preflight handler for each POST endpoint. */
-    cfg.max_uri_handlers = 11;
+     * flash-write, rom-load, plus one OPTIONS preflight handler for each POST endpoint. */
+    cfg.max_uri_handlers = 13;
     cfg.stack_size       = 8192;
     cfg.recv_wait_timeout = 15;   /* 15 s per recv — long stalls indicate a dead TCP connection,
                                      not a slow client.  Don't hang forever and leave flash half-erased. */
@@ -1142,12 +1320,19 @@ void ota_server_start(void)
     };
     httpd_register_uri_handler(server, &flash_write_uri);
 
+    static const httpd_uri_t rom_load_uri = {
+        .uri     = "/rom-load",
+        .method  = HTTP_POST,
+        .handler = handle_rom_load,
+    };
+    httpd_register_uri_handler(server, &rom_load_uri);
+
     /* OPTIONS preflight for every POST endpoint (Chrome sends this before
      * each cross-origin POST when Private Network Access is in play). */
     static const char *cors_paths[] = {
-        "/update", "/fpga-update", "/fpga-jtag-sram", "/fpga-recover", "/flash-write",
+        "/update", "/fpga-update", "/fpga-jtag-sram", "/fpga-recover", "/flash-write", "/rom-load",
     };
-    static httpd_uri_t options_uris[5];
+    static httpd_uri_t options_uris[6];
     for (size_t i = 0; i < sizeof(cors_paths) / sizeof(cors_paths[0]); i++) {
         options_uris[i].uri     = cors_paths[i];
         options_uris[i].method  = HTTP_OPTIONS;
@@ -1167,6 +1352,8 @@ void ota_server_start(void)
     ESP_LOGI(TAG, "  FPGA recovery  : curl -X POST http://<device-ip>:%d/fpga-recover",
              CONFIG_OTA_PORT);
     ESP_LOGI(TAG, "  ROM flash write : curl -X POST \"http://<device-ip>:%d/flash-write?addr=0x200000\" --data-binary @2dosa_c.bin",
+             CONFIG_OTA_PORT);
+    ESP_LOGI(TAG, "  ROM load (SD)  : curl -X POST \"http://<device-ip>:%d/rom-load?name=game.a26\" --data-binary @game.a26",
              CONFIG_OTA_PORT);
 }
 
