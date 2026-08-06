@@ -120,13 +120,17 @@ int sdc_write_sector(unsigned long sector, const unsigned char *buffer) {
 
 static SDC_RESULT sdc_read(BYTE *buff, LBA_t sector, UINT count) {
   sdc_debugf("sdc_read(%p,%lu,%u)", buff, sector, count);  
-  sdc_read_sector(sector, buff);
+  // fatfs issues multi-sector transfers for large reads; transfer every sector
+  for(UINT i=0;i<count;i++)
+    sdc_read_sector(sector+i, buff+512*i);
   return 0;
 }
 
 static SDC_RESULT sdc_write(const BYTE *buff, LBA_t sector, UINT count) {
   sdc_debugf("sdc_write(%p,%lu,%u)", buff, sector, count);  
-  sdc_write_sector(sector, buff);
+  // fatfs issues multi-sector transfers for large writes; transfer every sector
+  for(UINT i=0;i<count;i++)
+    sdc_write_sector(sector+i, buff+512*i);
   return 0;
 }
 
