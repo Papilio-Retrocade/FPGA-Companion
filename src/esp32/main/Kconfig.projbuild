@@ -4,9 +4,13 @@ menu "USB"
         default y
         help
             Enable the USB OTG host stack for HID keyboard/mouse/gamepad.
-            Disable this to free the USB PHY for USB Serial/JTAG logging
-            (useful when debugging WiFi logging or other early-boot issues).
-            When disabled, the COM port Serial/JTAG CDC stays active.
+            Disable this to always keep the USB PHY on Serial/JTAG console
+            duty (useful when debugging WiFi logging or other early-boot
+            issues).
+
+            When enabled, whether USB Host actually starts on a given boot
+            is still gated by a flag persisted in NVS (see usb_host_ctrl.c):
+            press the BOOT button at any time to toggle it and reboot.
 endmenu
 
 menu "WiFi UDP Logging"
@@ -35,42 +39,43 @@ menu "WiFi UDP Logging"
             Password for the WiFi network.
 endmenu
 
-menu "OTA Firmware Update"
-    config OTA_ENABLE
-        bool "Enable OTA HTTP update server"
+menu "Network Recovery / ROM Loading"
+    config NET_RECOVERY_ENABLE
+        bool "Enable network recovery HTTP server"
         default y
         depends on WIFI_LOG_ENABLE
         help
-            Start a minimal HTTP server after WiFi connects that accepts
-            firmware binary uploads via HTTP POST.
+            Start a minimal HTTP server after WiFi connects with two
+            endpoints: POST /goto-loader (reboot into the
+            papilio-esp-bootloader factory partition for remote
+            recovery/re-flashing) and POST /rom-load (upload a ROM/cart/disk
+            image to the SD card and hot-insert it).
 
-            Requires a partition table with two OTA app slots.
-            Use partitions_ota.csv (needs 4 MB flash).
+            This app no longer flashes itself -- OTA/JTAG/firmware updates
+            are handled by papilio-esp-bootloader.
 
-            Upload new firmware:
-              curl -X POST http://<device-ip>:3232/update --data-binary @build/fpga_companion.bin
-
-            Check status / current version:
+            Check status:
               curl http://<device-ip>:3232/
 
-    config OTA_PORT
-        int "OTA server HTTP port"
+    config NET_RECOVERY_PORT
+        int "Network recovery server HTTP port"
         default 3232
-        depends on OTA_ENABLE
+        depends on NET_RECOVERY_ENABLE
         help
-            TCP port the OTA HTTP server listens on. Default 3232 avoids
-            conflict with common services. Must be 1024-65535.
+            TCP port the network recovery HTTP server listens on. Default
+            3232 avoids conflict with common services. Must be 1024-65535.
 
-    config OTA_CORS_ALLOW_ORIGIN
-        string "CORS Allowed Origin (for browser-based flashing)"
+    config NET_RECOVERY_CORS_ALLOW_ORIGIN
+        string "CORS Allowed Origin (for browser-based tooling)"
         default "*"
-        depends on OTA_ENABLE
+        depends on NET_RECOVERY_ENABLE
         help
             Value sent in the Access-Control-Allow-Origin header, and used to
             satisfy Chrome's Private Network Access preflight so a HTTPS page
             (e.g. the hosted web flasher at papilioworks.com/flash) can POST
-            directly to this device's OTA endpoints from a browser.
+            directly to this device's endpoints from a browser.
 
             Set to your hosting domain (e.g. https://papilioworks.com) for
             production. "*" is fine for local development/testing.
 endmenu
+

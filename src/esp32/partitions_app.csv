@@ -1,0 +1,17 @@
+# FPGA-Companion partition table — 4 MB flash
+#
+# Phase 6 of the papilio-esp-bootloader plan: FPGA-Companion is now "an app in
+# a slot", not a self-flashing device. OTA/JTAG/serial-flash/WiFi-provisioning
+# all moved to the papilio-esp-bootloader factory app, which writes user-app
+# images into whichever ota_0/ota_1 slot is inactive.
+#
+# This table is only used for standalone builds/flashes of FPGA-Companion by
+# itself (idf.py flash without the loader). Sized to match the loader's own
+# ota_0/ota_1 slot budget (1.5 MB) so a standalone build stays a realistic
+# size check. When flashed via the loader, the loader's own partition table
+# (papilio-esp-bootloader/partitions_loader.csv) is what's actually on flash;
+# this file's offsets don't need to match it exactly.
+#
+# Name,   Type, SubType,  Offset,   Size
+nvs,      data, nvs,      0x9000,   0x6000
+factory,  app,  factory,  0x10000,  0x180000
