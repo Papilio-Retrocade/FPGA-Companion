@@ -22,6 +22,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_ota_ops.h"
 
 #include "wifi_log.h"
 #include "usb_host_ctrl.h"
@@ -762,6 +763,13 @@ void mcu_hw_init(void) {
 #endif
 
   bt_hid_init();
+
+  /* Confirm this boot succeeded so the OTA rollback safety net (and any
+   * app-initiated esp_restart(), e.g. the BOOT-button USB Host toggle)
+   * doesn't get treated as an unconfirmed/bad boot and bounced back to
+   * whatever was previously flashed (the loader's factory partition, when
+   * running under papilio-esp-bootloader's ota_0/ota_1 scheme). */
+  esp_ota_mark_app_valid_cancel_rollback();
 }
 
 void mcu_hw_main_loop(void) {
