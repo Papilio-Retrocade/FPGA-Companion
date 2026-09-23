@@ -7,6 +7,7 @@
 
 #ifdef ESP_PLATFORM
 #include "wifi_log.h"
+#include "usb_host_ctrl.h"
 #endif
 
 #include "../config.h"
@@ -86,7 +87,7 @@ static void com_task(__attribute__((unused)) void *p ) {
   debugf("Entering main loop");
 
 #ifdef ESP_PLATFORM
-  wifi_log_main_loop_reached();
+  usb_host_ctrl_update_led();
 #endif
   
   for(;;) {

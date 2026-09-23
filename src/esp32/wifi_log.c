@@ -43,15 +43,8 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
-#include "led_strip.h"
-
 #include "wifi_log.h"
-#include "ota_server.h"
-
-/* SuperMini ESP32-S3 has the WS2812 on GPIO48. Override via Kconfig if needed. */
-#ifndef CONFIG_WIFI_LOG_LED_GPIO
-#define CONFIG_WIFI_LOG_LED_GPIO 48
-#endif
+#include "net_recovery.h"
 
 /* ========================================================================= */
 
@@ -72,53 +65,6 @@ static int                s_udp_sock         = -1;
 static struct sockaddr_in s_dest_addr;
 static RingbufHandle_t    s_ringbuf      = NULL;
 static TaskHandle_t       s_sender_task  = NULL;
-static led_strip_handle_t s_led_strip    = NULL;
-
-/* Blink state — green blink active between WiFi connect and main loop entry */
-static volatile bool      s_blink_active = false;
-static volatile bool      s_blink_on     = false;
-static TimerHandle_t      s_blink_timer  = NULL;
-
-/* ========================================================================= */
-/* LED status helper                                                           */
-/* ========================================================================= */
-
-static void wifi_led_init(void) {
-    led_strip_config_t strip_cfg = {
-        .strip_gpio_num = CONFIG_WIFI_LOG_LED_GPIO,
-        .max_leds       = 1,
-    };
-    led_strip_rmt_config_t rmt_cfg = {
-        .resolution_hz = 10 * 1000 * 1000,  /* 10 MHz */
-    };
-    if (led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &s_led_strip) != ESP_OK) {
-        s_led_strip = NULL;
-    }
-}
-
-static void wifi_led_set(uint8_t r, uint8_t g, uint8_t b) {
-    if (!s_led_strip) return;
-    led_strip_set_pixel(s_led_strip, 0, r, g, b);
-    led_strip_refresh(s_led_strip);
-}
-
-static void blink_timer_cb(TimerHandle_t xTimer) {
-    if (!s_blink_active) return;
-    s_blink_on = !s_blink_on;
-    wifi_led_set(0, s_blink_on ? 16 : 0, 0);  /* blink green */
-}
-
-/* Public: set LED to an explicit colour, stops any blinking. */
-void wifi_log_led_set(uint8_t r, uint8_t g, uint8_t b) {
-    s_blink_active = false;
-    wifi_led_set(r, g, b);
-}
-
-/* Public: called when the main loop is entered — stop blinking, stay green. */
-void wifi_log_main_loop_reached(void) {
-    s_blink_active = false;
-    wifi_led_set(0, 16, 0);
-}
 
 /* ========================================================================= */
 /* Async UDP sender task                                                       */
@@ -194,8 +140,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         
-        /* Start OTA server now that WiFi is connected */
-        ota_server_start();
+        /* Start the recovery/ROM-load HTTP server now that WiFi is connected */
+        net_recovery_start();
     }
 }
 
@@ -209,10 +155,6 @@ void wifi_log_early_init(void) {
      * automatically drains the pre-WiFi backlog. */
     s_ringbuf = xRingbufferCreate(WIFI_LOG_RING_BUF_BYTES, RINGBUF_TYPE_BYTEBUF);
     xTaskCreate(udp_sender_task, "udp_log", 4096, NULL, 5, &s_sender_task);
-    wifi_led_init();
-    wifi_led_set(0, 0, 8);  /* dim blue = booting / connecting */
-    s_blink_timer = xTimerCreate("led_blink", pdMS_TO_TICKS(300), pdTRUE, NULL, blink_timer_cb);
-    if (s_blink_timer) xTimerStart(s_blink_timer, 0);
 }
 
 /*
@@ -293,7 +235,6 @@ void wifi_log_init(void) {
 
     if (!(bits & WIFI_CONNECTED_BIT)) {
         ESP_LOGW(TAG, "WiFi log: could not connect - logs will stay on UART only");
-        wifi_led_set(16, 0, 0);  /* red = WiFi failed */
         return;
     }
 
@@ -301,7 +242,6 @@ void wifi_log_init(void) {
     s_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (s_udp_sock < 0) {
         ESP_LOGE(TAG, "Failed to create UDP socket");
-        wifi_led_set(16, 0, 0);  /* red = socket error */
         return;
     }
 
@@ -312,9 +252,6 @@ void wifi_log_init(void) {
     s_dest_addr.sin_family      = AF_INET;
     s_dest_addr.sin_port        = htons(WIFI_LOG_UDP_PORT);
     s_dest_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-
-    wifi_led_set(0, 16, 0);  /* green blink = WiFi connected, waiting for main loop */
-    s_blink_active = true;
 
     /* Sender task drains the pre-WiFi backlog automatically now that
      * s_udp_sock >= 0; give it an immediate nudge. */

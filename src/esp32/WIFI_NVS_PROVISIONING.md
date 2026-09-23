@@ -16,19 +16,22 @@ before falling back to those compiled-in values, using namespace `wifi_cfg`:
 If neither key is present in NVS, behavior is unchanged — the firmware uses
 `CONFIG_WIFI_LOG_SSID`/`CONFIG_WIFI_LOG_PASSWORD` exactly as before.
 
-## Option A: Over USB serial (no extra tools, used by the hosted web flasher)
+## Option A: Serial WiFi provisioning has moved (currently no replacement for this app)
 
-While connected to the device's console UART/USB (the same port used to
-flash firmware), send two newline-terminated lines:
+FPGA-Companion itself no longer has a serial WiFi-provisioning listener --
+the old `WIFI_SSID=`/`WIFI_PASS=` serial commands and the code that handled
+them (`wifi_provision.c`) moved out in Phase 6 along with OTA/JTAG/
+serial-flash. `papilio-esp-bootloader` (the factory-partition app present on
+every board) has its own WiFi connection for its OTA server, but as of this
+writing it does **not** implement a serial `WIFI_SSID=`/`WIFI_PASS=`
+listener, and it stores its own credentials in a different NVS partition
+(`nvs_loader`, namespace `wifi_cfg`) than the one this app reads from (the
+default `nvs` partition, same namespace). So sending those serial commands
+to either firmware currently does nothing.
 
-```
-WIFI_SSID=YourNetworkName
-WIFI_PASS=YourNetworkPassword
-```
-
-The device writes both values to the `wifi_cfg` NVS namespace, acknowledges
-each with `WIFI_CFG_OK ssid` / `WIFI_CFG_OK pass`, then reboots once both are
-set. See `wifi_provision.c` for the implementation.
+Until that's addressed, use Option B below (NVS partition image) or
+compile-time `sdkconfig.defaults.local` values to set FPGA-Companion's own
+WiFi UDP debug-log credentials.
 
 ## Option B: Pre-built NVS image via esptool
 

@@ -22,9 +22,10 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_ota_ops.h"
 
 #include "wifi_log.h"
-#include "wifi_provision.h"
+#include "usb_host_ctrl.h"
 #include "bt_hid.h"
 
 //#define USB_ERROR_CHECK(a)  ESP_ERROR_CHECK(a)
@@ -33,11 +34,6 @@
 /* ========================================================================= */
 /* =========                          USB                        =========== */
 /* ========================================================================= */
-
-/* Fixed delay before USB Host bring-up, giving a developer time to send
- * USB_HOST_HOLD over serial (see wifi_provision.c) and keep the console
- * alive instead of switching to USB Host mode. */
-#define USB_HOST_GRACE_MS 5000
 
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
@@ -420,13 +416,13 @@ esp_flash_t* ext_flash;
 static bool ext_flash_ready = false;
 
 /* Set once mcu_hw_spi_init() has actually called spi_bus_initialize()/
- * spi_bus_add_flash_device() for SPI_HOST_ID. mcu_hw_init() starts the serial
- * command listener (wifi_provision.c's provision_task, which dispatches
- * FPGA_FLASH_BEGIN) well before calling mcu_hw_spi_init() — there's a ~5s
- * fixed delay plus WiFi connect retries (up to ~20s) in between. If a serial
- * FPGA-flash command arrives and finishes its data transfer inside that
- * window, touching `ext_flash`/the SPI bus before this flag is set would
- * dereference an uninitialized (NULL) SPI bus lock context and panic. */
+ * spi_bus_add_flash_device() for SPI_HOST_ID. mcu_hw_init() doesn't call
+ * mcu_hw_spi_init() until after WiFi bring-up (up to ~20s of connect
+ * retries), so any code path that can reach ensure_flash_ready()/
+ * mcu_hw_write_flash() before then (e.g. via an early menu/IRQ callback)
+ * needs to wait for this rather than assume the SPI bus is already up --
+ * touching `ext_flash` before it's initialized would dereference a NULL
+ * SPI bus lock context and panic. */
 static volatile bool s_spi_bus_ready = false;
 
 /* Bounded wait for s_spi_bus_ready, used by mcu_hw_reinit_flash()/
@@ -722,7 +718,7 @@ void mcu_hw_init(void) {
   // gpio_set_pull_mode(PIN_NUM_RECONFIG_N, GPIO_PULLUP_ONLY);
   // gpio_set_level(PIN_NUM_RECONFIG_N, 1);
   wifi_log_early_init();
-  wifi_provision_start();
+  usb_host_ctrl_init();
 
   const char *rr_str = "?";
   switch (reset_reason) {
@@ -753,27 +749,27 @@ void mcu_hw_init(void) {
   mcu_hw_spi_init();
 #if CONFIG_USB_HOST_ENABLE
   /* USB Host mode reuses the same GPIO19/20 pins as the USB-Serial/JTAG
-   * console, so bringing it up cuts off the only channel available to
-   * provision the device or use it as a debug console (see
-   * wifi_provision.c). Hold it off on an unprovisioned board, and give a
-   * fixed grace period on every boot for a developer to send USB_HOST_HOLD
-   * over serial and stay in console mode even when WiFi is already
-   * configured. USB_HOST_RESUME brings USB Host up on demand afterwards,
-   * without a reboot. */
-  wifi_provision_set_usb_resume_callback(usb_init);
-  debugf("USB Host starts in %d s - send USB_HOST_HOLD over serial to stay in console/debug mode", USB_HOST_GRACE_MS / 1000);
-  vTaskDelay(pdMS_TO_TICKS(USB_HOST_GRACE_MS));
-  if (!wifi_provision_should_hold_usb_host()) {
+   * console, so bringing it up cuts off the only channel available to use
+   * this board as a debug console -- switching is a one-way trip until
+   * reboot. The decision is made once at boot from a flag persisted in NVS
+   * (see usb_host_ctrl.c); press BOOT at any time to toggle it and reboot. */
+  if (usb_host_ctrl_is_enabled()) {
     usb_init();
-    wifi_provision_notify_usb_started();
   } else {
-    debugf("USB Host held off (WiFi not configured or USB_HOST_HOLD active) - send USB_HOST_RESUME over serial to start it now");
+    debugf("USB Host held off (BOOT-button toggle) - Serial/JTAG console active");
   }
 #else
   debugf("USB host disabled — Serial/JTAG active for debugging");
 #endif
 
   bt_hid_init();
+
+  /* Confirm this boot succeeded so the OTA rollback safety net (and any
+   * app-initiated esp_restart(), e.g. the BOOT-button USB Host toggle)
+   * doesn't get treated as an unconfirmed/bad boot and bounced back to
+   * whatever was previously flashed (the loader's factory partition, when
+   * running under papilio-esp-bootloader's ota_0/ota_1 scheme). */
+  esp_ota_mark_app_valid_cancel_rollback();
 }
 
 void mcu_hw_main_loop(void) {
