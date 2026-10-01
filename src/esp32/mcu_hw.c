@@ -23,6 +23,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 
 #include "wifi_log.h"
 #include "usb_host_ctrl.h"
@@ -741,6 +742,7 @@ void mcu_hw_init(void) {
   vTaskDelay(pdMS_TO_TICKS(5000));
 
   printf("\r\n\r\n" LOGO "           FPGA Companion for ESP32-S2/S3\r\n\r\n");
+  printf("PAPILIO_APP name=fpga_companion version=%s\r\n", esp_app_get_description()->version);
 
   debugf("  FPGA Reconfig  = GPIO%d", PIN_NUM_RECONFIG_N);
 

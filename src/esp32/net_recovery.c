@@ -94,6 +94,7 @@ static esp_err_t handle_status(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "FPGA Companion - Network Recovery\r\n"
         "==================================\r\n"
+        "PAPILIO_APP name=fpga_companion version=%s\r\n"
         "Running partition : %s\r\n"
         "Firmware version  : %s\r\n"
         "Build date        : %s %s\r\n"
@@ -105,6 +106,7 @@ static esp_err_t handle_status(httpd_req_t *req)
         "\r\n"
         "  Load a ROM/cart/disk image onto the SD card and hot-insert it (drive 0):\r\n"
         "    curl -X POST \"http://<device-ip>:%d/rom-load?name=game.a26\" --data-binary @game.a26\r\n",
+        app->version,
         running ? running->label : "unknown",
         app->version,
         app->date, app->time,
