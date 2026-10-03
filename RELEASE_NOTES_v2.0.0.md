@@ -6,11 +6,12 @@ the Papilio ESP Bootloader.
 
 ## Breaking change
 
-This image no longer contains the standalone flashing and recovery services
-from the pre-Phase-6 releases such as `v1.1.1`. Install
-`papilio-esp-bootloader v0.1.0` in the factory partition first. Existing
-boards with the old partition layout require the one-time
-`papilio-migration-v2.0.0-merged.bin` USB migration image.
+This image no longer contains standalone OTA, flashing, and recovery services.
+Those services now live in `papilio-esp-bootloader v0.1.0` in the factory
+partition, where they can be started independently of the installed user
+application. Install the bootloader first. Existing boards with the old
+partition layout require the one-time `papilio-migration-v2.0.0-merged.bin`
+USB migration image.
 
 ## Artifacts
 
