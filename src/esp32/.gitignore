@@ -7,3 +7,5 @@ sdkconfig.old
 
 # Local credential overrides — copy from sdkconfig.defaults.local.example and fill in
 sdkconfig.defaults.local
+
+build_release/
