@@ -153,16 +153,17 @@ static esp_err_t handle_goto_loader(httpd_req_t *req)
 }
 
 /* =========================================================================
- * POST /rom-load?name=<filename>[&insert=0]
+ * POST /rom-load?name=<filename>[&location=root|roms][&insert=0]
  *
- * Uploads a ROM/cart/disk image to /roms/<filename> on the SD card, then
- * hot-inserts it into drive 0 via sdc_image_open() -- exactly what the OSD
- * file browser does when a user picks a file. Works on every core (A2600,
- * NES, SNES, C64, ...) that reads images from the SD card. Pass ?insert=0
- * to upload without mounting.
+ * Uploads a ROM/cart/disk image to /roms/<filename> by default, or to the
+ * SD-card root when location=root, then optionally hot-inserts it into drive
+ * 0 via sdc_image_open() -- exactly what the OSD file browser does when a user
+ * picks a file. Works on every core that reads images from the SD card. Pass
+ * ?insert=0 to upload without mounting.
  *
  * Usage:
  *   curl -X POST "http://<device-ip>:3232/rom-load?name=frogger.a26" --data-binary @frogger.a26
+ *   curl -X POST "http://<device-ip>:3232/rom-load?name=a2600crt.bin&location=root" --data-binary @a2600crt.bin
  * ========================================================================= */
 
 #define ROM_LOAD_MAX_SIZE (1024 * 1024) /* 1 MB cap -- covers every cart/disk-style core */
@@ -185,13 +186,31 @@ static esp_err_t handle_rom_load(httpd_req_t *req)
 {
     char query[192]       = {0};
     char name[FF_LFN_BUF] = {0};
+    char location[8]      = {0};
     char insert_str[8]    = {0};
+    const char *upload_dir = ROM_LOAD_DIR;
     bool do_insert        = true;
+    bool create_roms_dir  = true;
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "Missing required query parameter: ?name=game.a26");
+        return ESP_FAIL;
+    }
+
+    esp_err_t location_result = httpd_query_key_value(query, "location", location, sizeof(location));
+    if (location_result == ESP_OK) {
+        if (strcmp(location, "root") == 0) {
+            upload_dir = CARD_MOUNTPOINT;
+            create_roms_dir = false;
+        } else if (strcmp(location, "roms") != 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Invalid location: use 'root' or 'roms'");
+            return ESP_FAIL;
+        }
+    } else if (location_result != ESP_ERR_NOT_FOUND) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid location parameter");
         return ESP_FAIL;
     }
 
@@ -216,12 +235,13 @@ static esp_err_t handle_rom_load(httpd_req_t *req)
     }
 
     char path[sizeof(ROM_LOAD_DIR) + FF_LFN_BUF + 2];
-    snprintf(path, sizeof(path), ROM_LOAD_DIR "/%s", name);
+    snprintf(path, sizeof(path), "%s/%s", upload_dir, name);
 
     ESP_LOGI(TAG, "ROM load: %d bytes -> %s", req->content_len, path);
 
     sdc_lock();
-    f_mkdir(ROM_LOAD_DIR);  /* ignore error: FR_EXIST if it's already there */
+    if (create_roms_dir)
+        f_mkdir(ROM_LOAD_DIR);  /* ignore error: FR_EXIST if it's already there */
 
     FIL fil;
     if (f_open(&fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
@@ -280,9 +300,8 @@ static esp_err_t handle_rom_load(httpd_req_t *req)
     bool osd_open = osd_is_visible();
     bool inserted = false;
     if (do_insert && !osd_open) {
-        /* sdc_set_default() points drive 0's cwd at /roms; sdc_image_open()
-         * then opens the file and reports it to the core -- same call the
-         * OSD file browser makes when a user picks a file. */
+        /* Select the uploaded file's directory before opening it, as the OSD
+         * file browser does when a user picks a file. */
         sdc_set_default(ROM_LOAD_DRIVE, path);
         if (sdc_image_open(ROM_LOAD_DRIVE, name) == 0) {
             inserted = true;

@@ -6,7 +6,11 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 (GW2A-18C FPGA + ESP32-S3) on top of Till Harbaum's upstream
 [FPGA-Companion](https://github.com/harbaum/FPGA-Companion).
 
-## [Unreleased]
+## [2.1.0] - 2026-10-05
+
+### Added
+- `/rom-load` accepts `location=root` to save an uploaded image in the SD-card
+  root while preserving `/roms` as the default for existing clients.
 
 ## [1.1.1] - 2026-08-01
 
