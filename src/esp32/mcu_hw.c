@@ -78,6 +78,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
 	for(int idx=0;idx<MAX_HID_DEVICES;idx++) {
 	  if(hid_device[idx].handle == hid_device_handle) {
 	    usb_debugf("releasing %d", idx);
+	    hid_input_device_disconnected(hid_device[idx].rep.type);
 	    hid_device[idx].handle = NULL;
 	    if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 	      hid_release_joystick(hid_device[idx].state.joystick.js_index);
@@ -127,6 +128,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 		 hid_device[idx].rep.report_id,
 		 hid_device[idx].rep.report_size);
 	      hid_device[idx].handle = hid_device_handle;
+	      hid_input_device_connected(hid_device[idx].rep.type);
 	      if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 		hid_device[idx].state.joystick.js_index = hid_allocate_joystick();
 	      

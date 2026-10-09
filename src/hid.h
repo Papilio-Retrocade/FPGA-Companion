@@ -29,6 +29,9 @@ typedef union {
 } hid_state_t;
 
 void hid_parse(const hid_report_t *report, hid_state_t *state, uint8_t const* data, uint16_t len);
+void hid_input_device_connected(uint8_t type);
+void hid_input_device_disconnected(uint8_t type);
+bool hid_input_device_present(void);
 
 void kbd_parse(const hid_report_t *report, struct hid_kbd_state_S *state, const unsigned char *buffer, int nbytes);
 void mouse_parse(const hid_report_t *report, struct hid_mouse_state_S *state, const unsigned char *buffer, int nbytes);

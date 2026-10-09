@@ -137,6 +137,7 @@ static void hidh_cb(void *handler_args, esp_event_base_t base,
 
         /* Commit slot */
         bt_dev[idx].dev = dev;
+        hid_input_device_connected(bt_dev[idx].rep.type);
         if (bt_dev[idx].rep.type == REPORT_TYPE_JOYSTICK)
             bt_dev[idx].state.joystick.js_index = hid_allocate_joystick();
         break;
@@ -196,6 +197,7 @@ static void hidh_cb(void *handler_args, esp_event_base_t base,
 
         for (int idx = 0; idx < MAX_BT_HID_DEVICES; idx++) {
             if (bt_dev[idx].dev == dev) {
+                hid_input_device_disconnected(bt_dev[idx].rep.type);
                 if (bt_dev[idx].rep.type == REPORT_TYPE_JOYSTICK)
                     hid_release_joystick(bt_dev[idx].state.joystick.js_index);
                 bt_dev[idx].dev = NULL;

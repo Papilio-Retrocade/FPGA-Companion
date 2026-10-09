@@ -45,6 +45,7 @@
 
 #include "wifi_log.h"
 #include "net_recovery.h"
+#include "../menu.h"
 
 /* ========================================================================= */
 
@@ -62,6 +63,9 @@ static const char *TAG = "wifi_log";
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static int                s_retry_num        = 0;
 static int                s_udp_sock         = -1;
+static volatile bool      s_wifi_connected   = false;
+static char               s_wifi_ip_address[16];
+static portMUX_TYPE       s_wifi_status_mux  = portMUX_INITIALIZER_UNLOCKED;
 static struct sockaddr_in s_dest_addr;
 static RingbufHandle_t    s_ringbuf      = NULL;
 static TaskHandle_t       s_sender_task  = NULL;
@@ -126,6 +130,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        portENTER_CRITICAL(&s_wifi_status_mux);
+        s_wifi_connected = false;
+        s_wifi_ip_address[0] = '\0';
+        portEXIT_CRITICAL(&s_wifi_status_mux);
+        menu_notify(MENU_EVENT_STATUS_CHANGED);
         if (s_retry_num < WIFI_LOG_MAX_RETRIES) {
             esp_wifi_connect();
             s_retry_num++;
@@ -138,6 +147,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi connected - IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
+        portENTER_CRITICAL(&s_wifi_status_mux);
+        s_wifi_connected = true;
+        snprintf(s_wifi_ip_address, sizeof(s_wifi_ip_address), IPSTR,
+                 IP2STR(&event->ip_info.ip));
+        portEXIT_CRITICAL(&s_wifi_status_mux);
+        menu_notify(MENU_EVENT_STATUS_CHANGED);
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         
         /* Start the recovery/ROM-load HTTP server now that WiFi is connected */
@@ -263,8 +278,29 @@ void wifi_log_init(void) {
 
 bool wifi_log_is_connected(void)
 {
-    /* Connected and UDP socket open means WiFi STA is up */
-    return s_udp_sock >= 0;
+    portENTER_CRITICAL(&s_wifi_status_mux);
+    bool connected = s_wifi_connected;
+    portEXIT_CRITICAL(&s_wifi_status_mux);
+    return connected;
+}
+
+bool wifi_log_get_ip_address(char *buffer, size_t buffer_size)
+{
+    if (!buffer || !buffer_size) return false;
+
+    char ip_address[sizeof(s_wifi_ip_address)];
+    portENTER_CRITICAL(&s_wifi_status_mux);
+    bool connected = s_wifi_connected;
+    memcpy(ip_address, s_wifi_ip_address, sizeof(ip_address));
+    portEXIT_CRITICAL(&s_wifi_status_mux);
+
+    if (!connected) {
+        buffer[0] = '\0';
+        return false;
+    }
+
+    snprintf(buffer, buffer_size, "%s", ip_address);
+    return true;
 }
 
 #endif /* CONFIG_WIFI_LOG_ENABLE */

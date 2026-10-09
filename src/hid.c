@@ -10,10 +10,68 @@
 #include "mcu_hw.h"
 
 #include <string.h>  // for memcpy
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#endif
 
 // keep a map of joysticks to be able to report
 // them individually
 static uint8_t joystick_map = 0;
+static uint16_t input_device_count = 0;
+#ifdef ESP_PLATFORM
+static portMUX_TYPE input_device_mux = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
+static bool hid_type_is_menu_input(uint8_t type) {
+  return type == REPORT_TYPE_KEYBOARD || type == REPORT_TYPE_JOYSTICK;
+}
+
+void hid_input_device_connected(uint8_t type) {
+  if(!hid_type_is_menu_input(type)) return;
+
+#ifdef ESP_PLATFORM
+  portENTER_CRITICAL(&input_device_mux);
+#endif
+  bool was_present = input_device_count != 0;
+  input_device_count++;
+#ifdef ESP_PLATFORM
+  portEXIT_CRITICAL(&input_device_mux);
+#endif
+  if(!was_present) menu_notify(MENU_EVENT_INPUT_CHANGED);
+}
+
+void hid_input_device_disconnected(uint8_t type) {
+  if(!hid_type_is_menu_input(type)) return;
+
+#ifdef ESP_PLATFORM
+  portENTER_CRITICAL(&input_device_mux);
+#endif
+  if(input_device_count == 0) {
+#ifdef ESP_PLATFORM
+    portEXIT_CRITICAL(&input_device_mux);
+#endif
+    return;
+  }
+  input_device_count--;
+#ifdef ESP_PLATFORM
+  bool no_devices = input_device_count == 0;
+  portEXIT_CRITICAL(&input_device_mux);
+#else
+  bool no_devices = input_device_count == 0;
+#endif
+  if(no_devices) menu_notify(MENU_EVENT_INPUT_CHANGED);
+}
+
+bool hid_input_device_present(void) {
+#ifdef ESP_PLATFORM
+  portENTER_CRITICAL(&input_device_mux);
+#endif
+  bool present = input_device_count != 0;
+#ifdef ESP_PLATFORM
+  portEXIT_CRITICAL(&input_device_mux);
+#endif
+  return present;
+}
 
 uint8_t hid_allocate_joystick(void) {
   uint8_t idx;

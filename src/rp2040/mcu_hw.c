@@ -83,6 +83,7 @@ static struct {
   uint8_t instance;
   uint8_t js_index;
   uint8_t state;
+  uint8_t connected;
 } xbox_state[MAX_XBOX_DEVICES];
   
 static void pio_usb_task(__attribute__((unused)) void *parms) {
@@ -118,6 +119,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     if(parse_report_descriptor(desc_report, desc_len, &hid_device[idx].rep, NULL)) {
       hid_device[idx].dev_addr = dev_addr;
       hid_device[idx].instance = instance;
+      hid_input_device_connected(hid_device[idx].rep.type);
       if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 	hid_device[idx].state.joystick.js_index = hid_allocate_joystick();
       else if(hid_device[idx].rep.type == REPORT_TYPE_MOUSE) {
@@ -145,6 +147,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
   for(int idx=0;idx<MAX_HID_DEVICES;idx++) {
     if(hid_device[idx].dev_addr == dev_addr && hid_device[idx].instance == instance) {
       usb_debugf("releasing %d", idx);
+      hid_input_device_disconnected(hid_device[idx].rep.type);
       hid_device[idx].dev_addr = 0xff;
       if(hid_device[idx].rep.type == REPORT_TYPE_JOYSTICK)
 	hid_release_joystick(hid_device[idx].state.joystick.js_index);
@@ -295,6 +298,17 @@ void tuh_xinput_report_received_cb(uint8_t dev_addr, uint8_t instance, xinputh_i
   const xinput_gamepad_t *p = &xid_itf->pad;
   
   if (xid_itf->last_xfer_result == XFER_RESULT_SUCCESS) {
+    for(int idx=0;idx<MAX_XBOX_DEVICES;idx++) {
+      if(xbox_state[idx].dev_addr == dev_addr && xbox_state[idx].instance == instance &&
+         xbox_state[idx].connected != xid_itf->connected) {
+        xbox_state[idx].connected = xid_itf->connected;
+        if(xid_itf->connected)
+          hid_input_device_connected(REPORT_TYPE_JOYSTICK);
+        else
+          hid_input_device_disconnected(REPORT_TYPE_JOYSTICK);
+      }
+    }
+
     if (xid_itf->connected && xid_itf->new_pad_data) {
 
       // find matching hid report
@@ -341,6 +355,9 @@ void tuh_xinput_mount_cb(uint8_t dev_addr, uint8_t instance, const xinputh_inter
     xbox_state[idx].instance = instance;
     xbox_state[idx].state = 0xff;    
     xbox_state[idx].js_index = hid_allocate_joystick();
+    xbox_state[idx].connected = xinput_itf->connected;
+    if(xbox_state[idx].connected)
+      hid_input_device_connected(REPORT_TYPE_JOYSTICK);
   } else
     usb_debugf("Error, no more free XBOX entries");
 
@@ -363,7 +380,10 @@ void tuh_xinput_umount_cb(uint8_t dev_addr, uint8_t instance) {
   for(int idx=0;idx<MAX_XBOX_DEVICES;idx++) {
     if(xbox_state[idx].dev_addr == dev_addr && xbox_state[idx].instance == instance) {
       usb_debugf("releasing %d/%d", idx, xbox_state[idx].js_index);
+      if(xbox_state[idx].connected)
+        hid_input_device_disconnected(REPORT_TYPE_JOYSTICK);
       xbox_state[idx].dev_addr = 0xff;
+      xbox_state[idx].connected = false;
       hid_release_joystick(xbox_state[idx].js_index);
     }
   }

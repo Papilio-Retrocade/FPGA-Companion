@@ -141,6 +141,8 @@ static void usbh_update(struct usb_config *usb) {
     else if(!usb->hid_info[i].class && usb->hid_info[i].state != STATE_NONE) {
       usb_debugf("HID LOST %d", i);
       vTaskDelete( usb->hid_info[i].task_handle );
+      if(usb->hid_info[i].state == STATE_RUNNING)
+        hid_input_device_disconnected(usb->hid_info[i].report.type);
       usb->hid_info[i].state = STATE_NONE;
 
       if(usb->hid_info[i].report.type == REPORT_TYPE_JOYSTICK) {
@@ -172,6 +174,8 @@ static void usbh_update(struct usb_config *usb) {
     else if(!usb->xbox_info[i].class && usb->xbox_info[i].state != STATE_NONE) {
       usb_debugf("XBOX %d", i);
       vTaskDelete( usb->xbox_info[i].task_handle );
+      if(usb->xbox_info[i].state == STATE_RUNNING)
+        hid_input_device_disconnected(REPORT_TYPE_JOYSTICK);
       usb->xbox_info[i].state = STATE_NONE;
       
       usb_debugf("Joystick %d gone", usb->xbox_info[i].js_index);
@@ -352,6 +356,7 @@ static void usbh_hid_thread(void *argument) {
       if(usb->hid_info[i].state == STATE_DETECTED) {
 	usb_debugf("NEW HID device %d", i);
 	usb->hid_info[i].state = STATE_RUNNING; 
+	hid_input_device_connected(usb->hid_info[i].report.type);
 
 	if( usb->hid_info[i].report.type == REPORT_TYPE_JOYSTICK ) {	
 	  usb->hid_info[i].hid_state.joystick.js_index = hid_allocate_joystick();
@@ -396,6 +401,7 @@ static void usbh_hid_thread(void *argument) {
       if(usb->xbox_info[i].state == STATE_DETECTED) {
 	usb_debugf("NEW XBOX device %d", i);
 	usb->xbox_info[i].state = STATE_RUNNING; 
+	hid_input_device_connected(REPORT_TYPE_JOYSTICK);
 
 	// search for free joystick slot
 	usb->xbox_info[i].js_index = hid_allocate_joystick();

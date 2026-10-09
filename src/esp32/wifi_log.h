@@ -21,6 +21,9 @@
  */
 
 #include "sdkconfig.h"
+#include <stdbool.h>
+#include <stddef.h>
+
 #ifdef CONFIG_WIFI_LOG_ENABLE
 
 /**
@@ -38,16 +41,25 @@ void wifi_log_early_init(void);
 void wifi_log_init(void);
 
 /**
- * Returns true if WiFi connected successfully and the UDP socket is open.
- * Call after wifi_log_init(). Always returns false when WiFi logging is
- * disabled, or if the connection attempt failed.
+ * Returns true while the WiFi station has an IP connection. Always returns
+ * false when WiFi logging is disabled, or while the station is disconnected.
  */
 bool wifi_log_is_connected(void);
+
+/**
+ * Copy the station IP address into the caller's buffer. Returns true when
+ * the station has an IP address; otherwise writes an empty string.
+ */
+bool wifi_log_get_ip_address(char *buffer, size_t buffer_size);
 
 #else
 static inline void wifi_log_early_init(void) {}
 static inline void wifi_log_init(void) {}
 static inline bool wifi_log_is_connected(void) { return false; }
+static inline bool wifi_log_get_ip_address(char *buffer, size_t buffer_size) {
+    if (buffer && buffer_size) buffer[0] = '\0';
+    return false;
+}
 #endif // CONFIG_WIFI_LOG_ENABLE
 
 #endif // WIFI_LOG_H

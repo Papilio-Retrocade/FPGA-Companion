@@ -84,3 +84,9 @@ Boards using the pre-Phase-6 layout must first be migrated once with the
 migration, install Companion updates through the bootloader-managed `ota_0`
 and `ota_1` slots. See the bootloader's [OTA reference](https://github.com/Papilio-Labs/papilio-esp-bootloader/blob/main/docs/OTA_REFERENCE.md)
 for the recovery and programming contract.
+
+On ESP32 builds, the two-line OSD title bar shows USB Host mode on the first
+line and WiFi connection state on the second; the current IP address is shown
+when connected. The OSD opens automatically when no USB or Bluetooth keyboard
+or controller is connected, hides when one connects, and reopens when the
+last such device disconnects.

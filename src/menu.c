@@ -31,8 +31,14 @@
 #include "core.h"
 #include "sysctrl.h"
 #include "debug.h"
+#include "hid.h"
 
 #include "mcu_hw.h"
+
+#ifdef ESP_PLATFORM
+#include "esp32/wifi_log.h"
+#include "esp32/usb_host_ctrl.h"
+#endif
 
 // this is the u8g2_font_helvR08_te with any trailing
 // spaces removed
@@ -44,9 +50,13 @@ static menu_legacy_t menu;
 // The OSD (currently) is 64 pixel high. To allow for a proper
 // box around a text line, it needs to be 12 pixels high. A total
 // of five lines is 5*12 = 60 + title seperation line
-#define MENU_LINE_Y      13   // y pos of seperator line
+#define MENU_LINE_Y      25   // y pos of separator below the two-line title bar
 #define MENU_ENTRY_H     12   // height of regular menu entries
 #define MENU_ENTRY_BASE   9   // font baseline offset
+#define MENU_STATUS_BASE  (MENU_ENTRY_BASE + MENU_ENTRY_H)
+#define MENU_VISIBLE_ROWS 3
+#define MENU_VISIBLE_ENTRIES (MENU_VISIBLE_ROWS + 1)
+#define MENU_DIALOG_LINE_Y 13
 
 
 #define MENU_FORM_FSEL           -1
@@ -72,6 +82,15 @@ typedef struct {
 } menu_state_t;
 
 static menu_state_t *menu_state = NULL;
+static bool menu_auto_visible = false;
+
+static void menu_update_auto_visibility(void) {
+  bool show = !hid_input_device_present();
+  if(show != menu_auto_visible) {
+    menu_auto_visible = show;
+    osd_enable(show ? OSD_VISIBLE : OSD_INVISIBLE);
+  }
+}
 
 /* =========== handling of variables ============= */
 static menu_variable_t **variables = NULL;
@@ -316,6 +335,37 @@ static const unsigned char icn_left_bits[]   = { 0x00,0x20,0x30,0x38,0x3c,0x38,0
 static const unsigned char icn_floppy_bits[] = { 0xff,0x81,0x83,0x81,0xbd,0xad,0x6d,0x3f };
 static const unsigned char icn_empty_bits[] =  { 0xc3,0xe7,0x7e,0x3c,0x3c,0x7e,0xe7,0xc3 };
 
+#ifdef ESP_PLATFORM
+static int menu_status_prepare(char *usb_status, size_t usb_status_size,
+                               char *wifi_status, size_t wifi_status_size,
+                               char *ip_address, size_t ip_address_size) {
+  bool usb_host_enabled = false;
+#if CONFIG_USB_HOST_ENABLE
+  usb_host_enabled = usb_host_ctrl_is_enabled();
+#endif
+  bool wifi_connected = wifi_log_get_ip_address(ip_address, ip_address_size);
+  snprintf(usb_status, usb_status_size, "USB Host:%s",
+           usb_host_enabled ? "ON" : "OFF");
+  snprintf(wifi_status, wifi_status_size, "WiFi:%s",
+           wifi_connected ? "Connected" : "Disconnected");
+
+  u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
+  return u8g2_GetDisplayWidth(&u8g2) - u8g2_GetStrWidth(&u8g2, usb_status) - 1;
+}
+
+static void menu_status_draw(const char *usb_status, const char *wifi_status,
+                             const char *ip_address, int usb_status_x) {
+  u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
+  u8g2_DrawStr(&u8g2, usb_status_x, MENU_ENTRY_BASE, usb_status);
+  u8g2_DrawStr(&u8g2, 1, MENU_STATUS_BASE, wifi_status);
+  if(ip_address[0]) {
+    int ip_x = u8g2_GetDisplayWidth(&u8g2) -
+               u8g2_GetStrWidth(&u8g2, ip_address) - 1;
+    u8g2_DrawStr(&u8g2, ip_x, MENU_STATUS_BASE, ip_address);
+  }
+}
+#endif
+
 void u8g2_DrawStrT(u8g2_t *u8g2, u8g2_uint_t x, u8g2_uint_t y, const char *s) {
   // get length of string
   int n = 0;
@@ -333,6 +383,12 @@ void u8g2_DrawStrT(u8g2_t *u8g2, u8g2_uint_t x, u8g2_uint_t y, const char *s) {
 // parent menu.
 static void menu_legacy_draw_title(const char *s) {
   int x = 1;
+#ifdef ESP_PLATFORM
+  char usb_status[24], wifi_status[24], ip_address[16];
+  int status_x = menu_status_prepare(usb_status, sizeof(usb_status),
+                                     wifi_status, sizeof(wifi_status),
+                                     ip_address, sizeof(ip_address));
+#endif
 
   // draw left arrow for submenus
   if(menu.form) {
@@ -342,12 +398,22 @@ static void menu_legacy_draw_title(const char *s) {
 
   // draw title in bold and seperator line
   u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
+#ifdef ESP_PLATFORM
+  u8g2_SetClipWindow(&u8g2, x, 0, status_x - 2, MENU_LINE_Y);
+#endif
   u8g2_DrawStrT(&u8g2, x, MENU_ENTRY_BASE, menu_get_str(s, 0));
+#ifdef ESP_PLATFORM
+  u8g2_SetMaxClipWindow(&u8g2);
+#endif
   u8g2_DrawHLine(&u8g2, 0, MENU_LINE_Y, u8g2_GetDisplayWidth(&u8g2));
 
   if(x > 0 && menu.entry == 0)
     u8g2_DrawButtonFrame(&u8g2, 0, MENU_ENTRY_BASE, U8G2_BTN_INV, u8g2_GetDisplayWidth(&u8g2), 1, 1);
   
+#ifdef ESP_PLATFORM
+  menu_status_draw(usb_status, wifi_status, ip_address, status_x);
+#endif
+
   // draw the rest with normal font
   u8g2_SetFont(&u8g2, font_helvR08_te);
 }
@@ -547,9 +613,9 @@ static void menu_fileselector(int event) {
 	  // file found, adjust entry and offset
 	  menu.entry = i+1;
 	  
-	  if(menu.entries > 5 && menu.entry > 3) {
-	    if(menu.entry < menu.entries-2) menu.offset = menu.entry - 3;
-	    else                              menu.offset = menu.entries-5;
+	  if(menu.entries > MENU_VISIBLE_ENTRIES && menu.entry > MENU_VISIBLE_ROWS - 1) {
+	    if(menu.entry < menu.entries-2) menu.offset = menu.entry - (MENU_VISIBLE_ROWS - 1);
+	    else                              menu.offset = menu.entries-MENU_VISIBLE_ENTRIES;
 	  }
 	}
       }
@@ -562,7 +628,7 @@ static void menu_fileselector(int event) {
     menu.fs_scroll_entry = NULL;  // assume no scrolling needed
     menu_timer_enable(false);
     
-    for(int i=0;i<((dir->len<4)?dir->len:4);i++)
+    for(int i=0;i<((dir->len<MENU_VISIBLE_ROWS)?dir->len:MENU_VISIBLE_ROWS);i++)
       menu_fs_draw_entry(i, &(dir->files[i+menu.offset]));
   } else if(event == FSEL_SELECT) {
 
@@ -600,9 +666,9 @@ static void menu_fileselector(int event) {
 		// file found, adjust entry and offset
 		menu.entry = i+1;
 		
-		if(menu.entries > 5 && menu.entry > 3) {
-		  if(menu.entry < menu.entries-2) menu.offset = menu.entry - 3;
-		  else                              menu.offset = menu.entries-5;
+		if(menu.entries > MENU_VISIBLE_ENTRIES && menu.entry > MENU_VISIBLE_ROWS - 1) {
+		  if(menu.entry < menu.entries-2) menu.offset = menu.entry - (MENU_VISIBLE_ROWS - 1);
+		  else                              menu.offset = menu.entries-MENU_VISIBLE_ENTRIES;
 		}
 	      }
 	    }
@@ -632,9 +698,9 @@ static void menu_draw_form(const char *s) {
 
       // this is a newly opened form and we just determined the number
       // of menu entries. Therefore, adjust the scroll offset if needed
-      if(menu.entries > 5 && menu.entry > 3) {
-	if(menu.entry < menu.entries-2) menu.offset = menu.entry - 3;
-	else                            menu.offset = menu.entries-5;
+      if(menu.entries > MENU_VISIBLE_ENTRIES && menu.entry > MENU_VISIBLE_ROWS - 1) {
+	if(menu.entry < menu.entries-2) menu.offset = menu.entry - (MENU_VISIBLE_ROWS - 1);
+	else                            menu.offset = menu.entries-MENU_VISIBLE_ENTRIES;
       }
     }
 
@@ -767,20 +833,20 @@ static void menu_legacy_entry_go(int step) {
 
     // scrolling needed?
     if(step > 0) {
-      if(menu.entries <= 5)                   menu.offset = 0;
+      if(menu.entries <= MENU_VISIBLE_ENTRIES) menu.offset = 0;
       else {
-	if(menu.entry <= 3)                   menu.offset = 0;
-	else if(menu.entry < menu.entries-2) menu.offset = menu.entry - 3;
-	else                                   menu.offset = menu.entries-5;
+	if(menu.entry <= MENU_VISIBLE_ROWS - 1) menu.offset = 0;
+	else if(menu.entry < menu.entries-2) menu.offset = menu.entry - (MENU_VISIBLE_ROWS - 1);
+	else                                    menu.offset = menu.entries-MENU_VISIBLE_ENTRIES;
       }
     }
 
     if(step < 0) {
-      if(menu.entries <= 5)                   menu.offset = 0;
+      if(menu.entries <= MENU_VISIBLE_ENTRIES) menu.offset = 0;
       else {
-	if(menu.entry <= 2)                   menu.offset = 0;
-	else if(menu.entry < menu.entries-3) menu.offset = menu.entry - 2;
-	else                                   menu.offset = menu.entries-5;
+	if(menu.entry <= MENU_VISIBLE_ROWS - 2) menu.offset = 0;
+	else if(menu.entry < menu.entries-3) menu.offset = menu.entry - (MENU_VISIBLE_ROWS - 2);
+	else                                    menu.offset = menu.entries-MENU_VISIBLE_ENTRIES;
       }
     }
     
@@ -886,20 +952,20 @@ static void menu_entry_go(int step) {
 
     // scrolling needed?
     if(step > 0) {
-      if(entries <= 5)                            menu_state->scroll = 0;
+      if(entries <= MENU_VISIBLE_ENTRIES)           menu_state->scroll = 0;
       else {
-	if(menu_state->selected <= 3)             menu_state->scroll = 0;
-	else if(menu_state->selected < entries-2) menu_state->scroll = menu_state->selected - 3;
-	else                                      menu_state->scroll = entries-5;
+	if(menu_state->selected <= MENU_VISIBLE_ROWS - 1) menu_state->scroll = 0;
+	else if(menu_state->selected < entries-2) menu_state->scroll = menu_state->selected - (MENU_VISIBLE_ROWS - 1);
+	else                                           menu_state->scroll = entries-MENU_VISIBLE_ENTRIES;
       }
     }
 
     if(step < 0) {
-      if(entries <= 5)                            menu_state->scroll = 0;
+      if(entries <= MENU_VISIBLE_ENTRIES)           menu_state->scroll = 0;
       else {
-	if(menu_state->selected <= 2)             menu_state->scroll = 0;
-	else if(menu_state->selected < entries-3) menu_state->scroll = menu_state->selected - 2;
-	else                                      menu_state->scroll = entries-5;
+	if(menu_state->selected <= MENU_VISIBLE_ROWS - 2) menu_state->scroll = 0;
+	else if(menu_state->selected < entries-3) menu_state->scroll = menu_state->selected - (MENU_VISIBLE_ROWS - 2);
+	else                                           menu_state->scroll = entries-MENU_VISIBLE_ENTRIES;
       }
     }    
   } while(!menu_entry_is_usable());
@@ -907,6 +973,12 @@ static void menu_entry_go(int step) {
 
 static void menu_draw_title(const char *s, bool arrow, bool selected) {
   int x = 1;
+#ifdef ESP_PLATFORM
+  char usb_status[24], wifi_status[24], ip_address[16];
+  int status_x = menu_status_prepare(usb_status, sizeof(usb_status),
+                                     wifi_status, sizeof(wifi_status),
+                                     ip_address, sizeof(ip_address));
+#endif
 
   // draw left arrow for submenus
   if(arrow) {
@@ -916,7 +988,13 @@ static void menu_draw_title(const char *s, bool arrow, bool selected) {
 
   // draw title in bold and seperator line
   u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
+#ifdef ESP_PLATFORM
+  u8g2_SetClipWindow(&u8g2, x, 0, status_x - 2, MENU_LINE_Y);
+#endif
   u8g2_DrawStr(&u8g2, x, MENU_ENTRY_BASE, menu_get_str(s, 0));
+#ifdef ESP_PLATFORM
+  u8g2_SetMaxClipWindow(&u8g2);
+#endif
   u8g2_DrawHLine(&u8g2, 0, MENU_LINE_Y, u8g2_GetDisplayWidth(&u8g2));
 
   if(selected)
@@ -924,6 +1002,9 @@ static void menu_draw_title(const char *s, bool arrow, bool selected) {
 	 u8g2_GetDisplayWidth(&u8g2), 1, 1);
   
   // draw the rest with normal font
+#ifdef ESP_PLATFORM
+  menu_status_draw(usb_status, wifi_status, ip_address, status_x);
+#endif
   u8g2_SetFont(&u8g2, font_helvR08_te);
 }
 
@@ -1040,8 +1121,7 @@ static int menu_wrap_text(int y_in, const char *msg) {
 void menu_draw_dialog(const char *title,  const char *msg) {
   u8g2_ClearBuffer(&u8g2);
 
-  // MENU_LINE_Y is the height of the title incl line
-  int y = (64 - MENU_LINE_Y - menu_wrap_text(0, msg))/2;
+  int y = (64 - MENU_DIALOG_LINE_Y - menu_wrap_text(0, msg))/2;
   
   u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
   
@@ -1072,9 +1152,9 @@ void menu_draw(void) {
     // draw the title
     menu_draw_title(menu_state->menu->label, !menu_is_root(), menu_state->selected == 0);
 
-    // draw up to four entries
+    // draw up to three entries
     config_menu_entry_t *entry = menu_state->menu->entries;
-    for(int i=0;i<4 && entry[i].type != CONFIG_MENU_ENTRY_UNKNOWN;i++)
+    for(int i=0;i<MENU_VISIBLE_ROWS && entry[i].type != CONFIG_MENU_ENTRY_UNKNOWN;i++)
       menu_draw_entry(entry+i+menu_state->scroll, i, menu_state->selected == menu_state->scroll+i+1);    
   } else {
     // =============== draw a fileselector =================    
@@ -1084,8 +1164,8 @@ void menu_draw(void) {
     menu_timer_enable(false);
     fs_scroll_cur = -1;
 
-    // draw up to four entries
-    for(int i=0;i<4 && i<menu_state->dir->len-menu_state->scroll;i++) {            
+    // draw up to three entries
+    for(int i=0;i<MENU_VISIBLE_ROWS && i<menu_state->dir->len-menu_state->scroll;i++) {
       debugf("file %s", menu_state->dir->files[i+menu_state->scroll].name);
 
       menu_fs_draw_entry(i, &menu_state->dir->files[i+menu_state->scroll]);
@@ -1275,23 +1355,30 @@ void menu_do(int event) {
   menu_debugf("do %d", event);
   
   if(event)  {
-    if(event == MENU_EVENT_SHOW)   osd_enable(OSD_VISIBLE);
-    if(event == MENU_EVENT_HIDE)   osd_enable(OSD_INVISIBLE);
+    if(event == MENU_EVENT_INPUT_CHANGED) {
+      menu_update_auto_visibility();
+    } else if(event == MENU_EVENT_SHOW) {
+      menu_auto_visible = false;
+      osd_enable(OSD_VISIBLE);
+    } else if(event == MENU_EVENT_HIDE) {
+      menu_auto_visible = false;
+      osd_enable(OSD_INVISIBLE);
+    }
 
     if(!cfg) {    
       if(event == MENU_EVENT_UP)     menu_legacy_entry_go(-1);
       if(event == MENU_EVENT_DOWN)   menu_legacy_entry_go( 1);
 
-      if(event == MENU_EVENT_PGUP)   menu_legacy_entry_go(-4);
-      if(event == MENU_EVENT_PGDOWN) menu_legacy_entry_go( 4);
+      if(event == MENU_EVENT_PGUP)   menu_legacy_entry_go(-MENU_VISIBLE_ROWS);
+      if(event == MENU_EVENT_PGDOWN) menu_legacy_entry_go( MENU_VISIBLE_ROWS);
 
       if(event == MENU_EVENT_SELECT) menu_legacy_select();
     } else {
       if(event == MENU_EVENT_UP)     menu_entry_go(-1);
       if(event == MENU_EVENT_DOWN)   menu_entry_go( 1);
 
-      if(event == MENU_EVENT_PGUP)   menu_entry_go(-4);
-      if(event == MENU_EVENT_PGDOWN) menu_entry_go( 4);
+      if(event == MENU_EVENT_PGUP)   menu_entry_go(-MENU_VISIBLE_ROWS);
+      if(event == MENU_EVENT_PGDOWN) menu_entry_go( MENU_VISIBLE_ROWS);
 
       if(event == MENU_EVENT_SELECT) menu_select();
     }
@@ -1393,12 +1480,14 @@ void menu_init(void) {
   
   // message queue from USB to OSD
   menu_queue = xQueueCreate(10, sizeof( long ) );
+
+  menu_do(MENU_EVENT_INPUT_CHANGED);
   
   // start a thread for the on screen display    
   xTaskCreate(menu_task, (char *)"menu_task", 4096, NULL, configMAX_PRIORITIES-3, NULL);
 }
   
 void menu_notify(unsigned long msg) {
-  xQueueSendToBackFromISR(menu_queue, &msg,  ( TickType_t ) 0);
+  if(menu_queue && xQueueSendToBack(menu_queue, &msg, 0) != pdPASS)
+    menu_debugf("event queue full");
 }
-

@@ -14,6 +14,8 @@
 #define MENU_EVENT_HIDE   7
 #define MENU_EVENT_PGUP   8
 #define MENU_EVENT_PGDOWN 9
+#define MENU_EVENT_INPUT_CHANGED 10
+#define MENU_EVENT_STATUS_CHANGED 11
 
 // variables
 typedef struct {
