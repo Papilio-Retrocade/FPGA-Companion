@@ -12,6 +12,14 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 - `/rom-load` accepts `location=root` to save an uploaded image in the SD-card
   root while preserving `/roms` as the default for existing clients.
 
+## [2.2.0] - 2026-10-10
+
+### Added
+- ESP32 OSD title bar displays USB Host state, WiFi connection state, and the
+  current WiFi IP address.
+- OSD opens when no supported keyboard or controller is connected, hides when
+  one connects, and reopens when the last supported input disconnects.
+
 ## [1.1.1] - 2026-08-01
 
 ### Fixed
