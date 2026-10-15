@@ -106,17 +106,19 @@ idf.py build
 
 The firmware version displayed by the board comes from ESP-IDF's application
 descriptor. A reused CMake build directory can retain an old `PROJECT_VER`
-after the source has moved to a newer release tag. Build release images in a
-fresh directory and explicitly pass the release tag:
+after the source has moved to a newer release tag. Build release images from a
+clean checkout of the release tag, using a fresh build directory:
 
 ```
-idf.py -B build_release -DPROJECT_VER=vX.Y.Z build
+idf.py -B build_release set-target esp32s3
+idf.py -B build_release build
 python -m esptool image-info build_release/fpga_companion.bin
 ```
 
-Replace `vX.Y.Z` with the release tag and confirm `App version` in the image
-information matches it before packaging. Do not package binaries from an older
-build directory.
+ESP-IDF derives `PROJECT_VER` from the checked-out Git tag when no project
+version is specified. Confirm `App version` in the image information matches
+the release tag before packaging. Do not package binaries from an older build
+directory.
 
 If successful the resulting binary can be flashed:
 
