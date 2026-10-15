@@ -96,11 +96,27 @@ and change a few settings:
 - Navigate to ```Component Config``` and then to ```FreeRTOS``` and ```Kernel```
   - Set ```configTICK_RATE_HZ``` to 1000
 
-Finally start the build with 
+Finally start the build with
 
 ```
 idf.py build
 ```
+
+## Release build version check
+
+The firmware version displayed by the board comes from ESP-IDF's application
+descriptor. A reused CMake build directory can retain an old `PROJECT_VER`
+after the source has moved to a newer release tag. Build release images in a
+fresh directory and explicitly pass the release tag:
+
+```
+idf.py -B build_release -DPROJECT_VER=vX.Y.Z build
+python -m esptool image-info build_release/fpga_companion.bin
+```
+
+Replace `vX.Y.Z` with the release tag and confirm `App version` in the image
+information matches it before packaging. Do not package binaries from an older
+build directory.
 
 If successful the resulting binary can be flashed:
 
