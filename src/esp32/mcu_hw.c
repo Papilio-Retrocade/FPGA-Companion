@@ -508,11 +508,13 @@ void mcu_hw_spi_init(void) {
   // The interruput input isn't strictly part of the SPi
   // The interrupt is active low
   debugf("  IRQn = GPIO%d", PIN_NUM_IRQ);
+  // esp_restart() keeps GPIO int state; a stale enable with IRQn already low storms the ISR service before our handler exists
+  gpio_intr_disable(PIN_NUM_IRQ);
   gpio_set_pull_mode(PIN_NUM_IRQ, GPIO_PULLUP_ONLY);
   gpio_set_direction(PIN_NUM_IRQ, GPIO_MODE_INPUT);  
+  gpio_set_intr_type(PIN_NUM_IRQ, GPIO_INTR_LOW_LEVEL);
   gpio_install_isr_service(ESP_INTR_FLAG_LEVEL2);
   gpio_isr_handler_add(PIN_NUM_IRQ, irq_handler, NULL);
-  gpio_set_intr_type(PIN_NUM_IRQ, GPIO_INTR_LOW_LEVEL);
 
   /* Register the external SPI flash device on the bus.
    * We do NOT call esp_flash_init() here — the FPGA SPI bridge is not yet

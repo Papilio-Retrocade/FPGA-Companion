@@ -20,6 +20,18 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 - OSD opens when no supported keyboard or controller is connected, hides when
   one connects, and reopens when the last supported input disconnects.
 
+## [2.2.2] - 2026-11-16
+
+### Fixed
+- Companion no longer crashes with an interrupt watchdog timeout on the first
+  boot after the Papilio ESP Bootloader flashes a new FPGA core (seen with the
+  A2600 and C64 cores). `esp_restart()` kept the previous run's GPIO9 (FPGA
+  IRQ) interrupt enable, and a freshly booted core holds IRQ low, so the GPIO
+  ISR service looped before the IRQ handler was attached. The crash happened
+  before the app marked itself valid, so the bootloader rolled back to itself.
+  The IRQ interrupt is now disabled and configured before the ISR service is
+  installed.
+
 ## [1.1.1] - 2026-08-01
 
 ### Fixed
