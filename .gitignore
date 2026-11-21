@@ -65,3 +65,4 @@ src/esp32/sdkconfig.release
 src/esp32/*.log
 release_v*/
 
+test_bins/*
