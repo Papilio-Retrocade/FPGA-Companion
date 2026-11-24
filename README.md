@@ -75,15 +75,22 @@ disadvantages.
 
 ## Papilio Retrocade release
 
-The Papilio Retrocade ESP32-S3 release is `v2.2.2`. In this release the
+The Papilio Retrocade ESP32-S3 release is `v2.2.3`. In this release the
 Companion is an OTA application only; flashing, FPGA programming, and recovery
 are provided by the [Papilio ESP Bootloader](https://github.com/Papilio-Labs/papilio-esp-bootloader).
 
 Boards using the pre-Phase-6 layout must first be migrated once with the
-`papilio-migration-v2.2.2-merged.bin` image from the release package. After
+`papilio-migration-v2.2.3-merged.bin` image from the release package. It bundles
+Papilio ESP Bootloader v0.1.3, which fixes USB FPGA erase alignment and reports
+erase/write failures. After
 migration, install Companion updates through the bootloader-managed `ota_0`
 and `ota_1` slots. See the bootloader's [OTA reference](https://github.com/Papilio-Labs/papilio-esp-bootloader/blob/main/docs/OTA_REFERENCE.md)
 for the recovery and programming contract.
+
+An OTA Companion application update does not replace the factory loader.
+Boards already using the loader layout can update only the factory loader
+with the [v0.1.3 release](https://github.com/Papilio-Labs/papilio-esp-bootloader/releases/tag/v0.1.3);
+do not apply the full migration image merely to update an existing loader.
 
 On ESP32 builds, the two-line OSD title bar shows USB Host mode on the first
 line and WiFi connection state on the second; the current IP address is shown

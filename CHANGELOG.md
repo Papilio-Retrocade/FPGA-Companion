@@ -32,6 +32,15 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
   The IRQ interrupt is now disabled and configured before the ISR service is
   installed.
 
+## [2.2.3] - 2026-11-23
+
+### Fixed
+- Migration images now bundle Papilio ESP Bootloader v0.1.3 instead of v0.1.1.
+  Persistent USB FPGA erases cover complete sectors, and USB/HTTP uploads stop
+  on erase/write errors rather than acknowledging failed operations.
+- Rebuild the otherwise unchanged Companion application with the v2.2.3
+  descriptor so the board-reported version matches the release.
+
 ## [1.1.1] - 2026-08-01
 
 ### Fixed
