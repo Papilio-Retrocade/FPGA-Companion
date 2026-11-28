@@ -41,6 +41,13 @@ This fork adds ESP32-S3 support for the [Papilio Retrocade](https://papilioworks
 - Rebuild the otherwise unchanged Companion application with the v2.2.3
   descriptor so the board-reported version matches the release.
 
+## [2.2.4] - 2026-11-27
+
+### Fixed
+- Bound the network recovery status response to its buffer and return an error
+  if formatting fails or the response would be truncated.
+- Publish a complete 4 MB migration image for Loader provisioning compatibility.
+
 ## [1.1.1] - 2026-08-01
 
 ### Fixed

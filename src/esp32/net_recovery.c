@@ -90,7 +90,7 @@ static esp_err_t handle_status(httpd_req_t *req)
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_app_desc_t  *app     = esp_app_get_description();
 
-    char buf[512];
+    char buf[768];
     int n = snprintf(buf, sizeof(buf),
         "FPGA Companion - Network Recovery\r\n"
         "==================================\r\n"
@@ -112,6 +112,11 @@ static esp_err_t handle_status(httpd_req_t *req)
         app->date, app->time,
         CONFIG_NET_RECOVERY_PORT,
         CONFIG_NET_RECOVERY_PORT);
+
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        ESP_LOGE(TAG, "Failed to format network recovery status");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Status unavailable");
+    }
 
     add_cors_headers(req);
     httpd_resp_set_type(req, "text/plain");
